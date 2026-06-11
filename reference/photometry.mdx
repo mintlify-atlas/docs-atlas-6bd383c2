@@ -1,7 +1,7 @@
 ---
-title: "photometry module: run_pipeline() API Reference"
-sidebarTitle: "photometry"
-description: "API reference for photometry.run_pipeline(): inputs, pipeline steps, output dict fields, quality flag logic, and internal helper functions."
+title: "photometry: run_pipeline() Differential Photometry API"
+sidebarTitle: "Photometry"
+description: "Complete reference for photometry.run_pipeline(): signature, 14 output fields, good/acceptable/poor quality thresholds, config keys, and internal helpers."
 ---
 
 The `photometry` module provides a single public entry point, `run_pipeline()`, which executes the complete 8-step differential photometry pipeline on a FITS file. The pipeline loads the image, confirms WCS coverage via plate solving, estimates the PSF, fetches comparison stars from AAVSO VSP (falling back to Gaia DR3), performs aperture photometry, derives a differential magnitude through a weighted ensemble zero-point, and attaches a quality flag before returning. The result dict is shaped to map directly onto the AAVSO Extended File Format fields consumed by `aavso_submission.submit()`.

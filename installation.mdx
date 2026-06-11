@@ -1,7 +1,7 @@
 ---
 title: "Install Boundless Skies Node v1 on macOS, Linux, or Windows"
 sidebarTitle: "Installation"
-description: "Step-by-step guide to installing Node v1: Python 3.10+, virtual environment, pip dependencies, and optional ASTAP plate solver."
+description: "Step-by-step guide to installing Node v1: Python 3.10+, virtual environment, pip dependencies, optional ASTAP plate solver, and how to start the dashboard."
 ---
 
 Node v1 is a pure-Python 3.10+ application with no platform-specific code. It has been tested on macOS and runs equally well on Linux and Windows. Installation takes around five minutes: clone the repository, create a virtual environment, install dependencies from `requirements.txt`, and edit `config.yaml` for your site. There is nothing to compile and no system-level packages to install beyond Python itself.
@@ -160,12 +160,13 @@ Runs the Flask server once with no supervisor. If the process crashes it stays d
 After either command, open [http://localhost:5173](http://localhost:5173) in a browser. The dashboard opens automatically in some environments.
 
 <Note>
-  The repository ships a convenience script `run.sh` that activates the virtual environment and forwards all arguments to `python3`. You can use it as:
+  The repository ships a convenience script `run.sh` that activates the virtual environment and forwards all arguments to `python3`. Its contents are:
 
   ```bash
-  ./run.sh main.py
-  # equivalent to: source venv/bin/activate && python3 main.py
+  #!/bin/bash
+  source venv/bin/activate
+  python3 "$@"
   ```
 
-  This is handy if you switch between virtual environments frequently, or when launching from a cron job or shell alias.
+  Use it as `./run.sh main.py` or `./run.sh dashboard.py` — handy if you switch between virtual environments frequently, or when launching from a cron job or shell alias.
 </Note>

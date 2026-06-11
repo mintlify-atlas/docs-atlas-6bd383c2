@@ -1,7 +1,7 @@
 ---
-title: "fits_export module: export_enhanced_fits() API Reference"
-sidebarTitle: "fits_export"
-description: "API reference for fits_export.export_enhanced_fits(): copies a FITS file to a dated subdirectory and enriches the header with observatory and processing metadata."
+title: "fits_export: export_enhanced_fits() Full API Reference"
+sidebarTitle: "FITS Export"
+description: "Copies a FITS file into a dated directory and adds observatory, detector, and photometry keywords to its header. export_enhanced_fits() API reference."
 ---
 
 The `fits_export` module provides `export_enhanced_fits()`, which copies a source FITS file into a structured, dated output directory and enriches the copy's primary HDU header with observatory, detector, and processing metadata drawn from the configuration and the photometry result dict. Original Seestar header keywords are never overwritten — new keywords are added only when absent from the source file, preserving the camera-reported values for downstream archival pipelines. HISTORY lines are always appended unconditionally.
@@ -47,7 +47,7 @@ Returns the path to the exported and enriched FITS file as a string, or `None` i
 
 Exported files are stored under:
 
-```
+```text
 <export_dir>/<YYYY-MM-DD>/<original_basename>
 ```
 
@@ -90,7 +90,7 @@ The following FITS keywords are written to the copy's primary HDU. All keywords 
 
 ### HISTORY Lines
 
-Four HISTORY lines are conditionally appended (never overwrite existing history):
+Up to six HISTORY lines are conditionally appended (never overwrite existing history):
 
 1. `"Processed by Boundless Skies Node v1 (<node_id>)"` — always appended.
 2. `"Differential photometry: mag=<mag>+/-<err> snr=<snr> quality=<flag>"` — when `result["magnitude"]` is present.

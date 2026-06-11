@@ -78,7 +78,7 @@ The tracking rate is controlled by the `telescope.tracking_rate` config key. A v
 The **Slew** form accepts a target position in equatorial coordinates and sends:
 
 ```json
-POST /api/telescope/slew
+POST /api/slew
 {
   "ra": 5.588,
   "dec": -5.391
@@ -109,7 +109,7 @@ The on-screen joystick provides directional nudges for fine centering after a sl
 POST /api/telescope/nudge
 {
   "direction": "N",
-  "arcseconds": 30
+  "step": 30
 }
 ```
 
@@ -117,8 +117,8 @@ POST /api/telescope/nudge
   Cardinal direction: `"N"`, `"S"`, `"E"`, or `"W"`.
 </ParamField>
 
-<ParamField body="arcseconds" type="float" required>
-  Angular distance to nudge, in arcseconds. The dashboard exposes two preset step sizes—**Fine** (small arcsecond value for precise centering) and **Coarse** (larger value for repositioning after a rough slew)—selectable with the step-size toggle above the joystick.
+<ParamField body="step" type="float" required>
+  Angular distance to nudge, in arcseconds (valid range: 1–3600). The dashboard exposes two preset step sizes—**Fine** (small arcsecond value for precise centering) and **Coarse** (larger value for repositioning after a rough slew)—selectable with the step-size toggle above the joystick.
 </ParamField>
 
 <Note>
@@ -131,8 +131,8 @@ The autofocus module drives the focuser through a configurable range of position
 
 | Action | Endpoint |
 |--------|----------|
-| Start autofocus | `POST /api/focus/start` |
-| Stop autofocus | `POST /api/focus/stop` |
+| Start autofocus | `POST /api/focus/auto` |
+| Stop / cancel autofocus | `DELETE /api/focus/auto` |
 
 Both endpoints accept an empty body `{}`. Progress is reported in the live log stream.
 
@@ -158,7 +158,7 @@ Auto-centering plate-solves the current field, calculates the offset from the re
 
 | Action | Endpoint |
 |--------|----------|
-| Start auto-centering | `POST /api/center/start` |
+| Start auto-centering | `POST /api/center/run` |
 
 The centering loop reads these `config.yaml` keys:
 

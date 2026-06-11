@@ -11,7 +11,7 @@ description: "API reference for SafetyManager: lifecycle methods, is_safe(), sta
 ## Constructor
 
 ```python
-from alpaca.safety_manager import SafetyManager
+from safety_manager import SafetyManager
 
 mgr = SafetyManager(config: dict)
 ```
@@ -22,11 +22,11 @@ Initialises the `SafetyManager` from `config["safety"]`. No threads are started 
   Master enable switch. When `false`, `is_safe()` always returns `True` and the watchdog thread exits immediately after `start()` — useful for bench testing without a connected telescope.
 </ParamField>
 
-<ParamField path="safety.disconnect_timeout" type="float" default="60">
+<ParamField path="safety.disconnect_timeout" type="float" default="600">
   Number of seconds without a heartbeat before the manager considers the connection lost and begins reconnection attempts.
 </ParamField>
 
-<ParamField path="safety.heartbeat_interval" type="float" default="10">
+<ParamField path="safety.heartbeat_interval" type="float" default="30">
   Expected interval in seconds between heartbeat signals from the dashboard poll cycle. Used to set watchdog timer granularity.
 </ParamField>
 
@@ -34,7 +34,7 @@ Initialises the `SafetyManager` from `config["safety"]`. No threads are started 
   Maximum number of reconnection attempts before the manager gives up and issues an emergency park command.
 </ParamField>
 
-<ParamField path="safety.reconnect_delay" type="float" default="15">
+<ParamField path="safety.reconnect_delay" type="float" default="10">
   Delay in seconds between successive reconnection attempts.
 </ParamField>
 
@@ -163,7 +163,7 @@ When the current UTC time crosses the dawn threshold, the manager:
 Custom safety checks can be added by subclassing `SafetyManager`. Override the internal watchdog loop body to add domain-specific checks — weather station humidity, cloud sensor readings, mount limit switches, etc. Always gate any observing operation on `_safety_mgr.is_safe()`:
 
 ```python
-from alpaca.safety_manager import SafetyManager
+from safety_manager import SafetyManager
 
 class WeatherSafetyManager(SafetyManager):
     def __init__(self, config: dict, weather_client) -> None:

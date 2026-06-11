@@ -1,7 +1,7 @@
 ---
-title: "LiveStacker Module: Real-Time Frame Alignment and Accumulation"
+title: "LiveStacker: Real-Time Frame Alignment and Stacking"
 sidebarTitle: "LiveStacker"
-description: "API reference for LiveStacker: constructor parameters, add_frame(), stacked_image(), preview_png_b64(), reset(), and the estimate_translation() helper."
+description: "LiveStacker API: constructor params, add_frame(), stacked_image(), preview_png_b64(), reset(), snr_gain(), and estimate_translation()."
 ---
 
 `LiveStacker` aligns incoming image frames via RANSAC-style translation estimation and accumulates them in a float64 running sum, delivering √N SNR improvement. It is entirely self-contained and hardware-free: feed it raw image arrays (nested lists from ALPACA or ndarrays) and it handles normalisation, star detection, alignment, and preview generation internally.

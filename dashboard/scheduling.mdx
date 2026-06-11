@@ -1,5 +1,5 @@
 ---
-title: "Night Scheduler: Catalog Lookup and Automated Observation Runs"
+title: "Night Scheduler: Catalog Lookup and Automated Sequences"
 sidebarTitle: "Scheduling"
 description: "Use the Node v1 scheduler to browse the Messier/NGC catalog, build a nightly observation queue, and run timed multi-target sequences automatically."
 ---
@@ -32,7 +32,7 @@ GET /api/catalog
 ]
 ```
 
-You can filter the list by object type or search by name. When you select an entry, the dashboard auto-fills the scheduling modal with the object's RA, Dec, and name. RA values in the catalog are already in decimal hours, matching the format required by `POST /api/telescope/slew`.
+You can filter the list by object type or search by name. When you select an entry, the dashboard auto-fills the scheduling modal with the object's RA, Dec, and name. RA values in the catalog are already in decimal hours, matching the format required by `POST /api/slew`.
 
 <Note>
   The catalog is served from the PyONGC database bundled with the node. It does not require an internet connection at runtime. If you need objects not in the NGC/Messier catalogs, enter coordinates manually in the scheduling modal.
@@ -47,7 +47,7 @@ Each entry in the observation queue is a **schedule item** with the following fi
 </ParamField>
 
 <ParamField body="ra" type="float" required>
-  Right ascension in **decimal hours** (0 – 24). Must match the convention used by `POST /api/telescope/slew`.
+  Right ascension in **decimal hours** (0 – 24). Must match the convention used by `POST /api/slew`.
 </ParamField>
 
 <ParamField body="dec" type="float" required>
@@ -124,7 +124,7 @@ The schedule runner processes items sequentially:
     If the item has a `startTime`, the runner idles until that wall-clock time is reached.
   </Step>
   <Step title="Slew to target">
-    The runner sends `POST /api/telescope/slew` with the item's RA and Dec, then waits for the slew to complete.
+    The runner sends `POST /api/slew` with the item's RA and Dec, then waits for the slew to complete.
   </Step>
   <Step title="Capture frames">
     The runner calls `POST /api/camera/expose` repeatedly—once per frame—with the item's `expDur` and `binning` values, until `expCount` frames have been saved.
@@ -134,7 +134,7 @@ The schedule runner processes items sequentially:
   </Step>
 </Steps>
 
-To abort a running schedule at any time, click **Stop Schedule**, which sends `POST /api/schedule/stop`. The current exposure is allowed to complete before the runner halts; it does not park the mount automatically.
+To abort a running schedule at any time, click **Stop Schedule**, which sends `DELETE /api/schedule/abort`. The current exposure is allowed to complete before the runner halts; it does not park the mount automatically.
 
 <Warning>
   Stopping the schedule does not cancel the in-progress exposure. If you need an immediate halt of both the schedule and the camera, use the **Emergency Park** button in the Safety panel instead.

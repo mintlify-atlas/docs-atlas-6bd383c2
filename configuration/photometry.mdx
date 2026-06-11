@@ -1,5 +1,5 @@
 ---
-title: "Photometry and AAVSO Pipeline Configuration"
+title: "Photometry Pipeline and AAVSO Submission Configuration"
 sidebarTitle: "Photometry"
 description: "Configure the Node v1 photometry pipeline: target coordinates, aperture geometry, comparison star queries, AAVSO credentials, and FITS export settings."
 ---
@@ -155,7 +155,7 @@ The pipeline assigns one of three quality flags to every measurement based on SN
 | Flag | SNR | Uncertainty | Comp Stars | Airmass | Default action |
 |------|-----|-------------|------------|---------|----------------|
 | `good` | ≥ `snr_threshold` (20) | ≤ `max_uncertainty` (0.3 mag) | ≥ `min_comparison_stars` (3) | ≤ `max_airmass` (3.0) | Submitted to AAVSO |
-| `acceptable` | ≥ `snr_threshold` | > `max_uncertainty` **or** airmass approaching limit | ≥ `min_comparison_stars` | ≤ `max_airmass` | Submitted to AAVSO |
-| `poor` | < `snr_threshold` **or** < `min_comparison_stars` | Any | < `min_comparison_stars` | > `max_airmass` | Saved to audit trail only (unless `submit_poor_quality: true`) |
+| `acceptable` | ≥ 10 (0.5 × `snr_threshold`) | < 0.45 mag (1.5 × `max_uncertainty`) | ≥ 2 (one below `min_comparison_stars`) | ≤ `max_airmass` (3.0) | Submitted to AAVSO |
+| `poor` | < 10 **or** any hard gate failed | Any | < 2 | > `max_airmass` (3.0) | Saved to audit trail only (unless `submit_poor_quality: true`) |
 
-A measurement is `poor` if **any** of the following is true: SNR below threshold, fewer comparison stars than `min_comparison_stars`, or airmass above `max_airmass`. Otherwise it is `good` if all quality criteria pass, or `acceptable` if it passes the hard gates but the uncertainty slightly exceeds `max_uncertainty`.
+A measurement is `poor` if **any** hard gate is missed: SNR below the half-threshold (10), fewer than 2 usable comparison stars, or airmass above `max_airmass`. A measurement is `good` when all thresholds pass at their full values. `acceptable` sits between those two bands — it clears the hard gates but falls short of the full `good` criteria on one or more soft dimensions such as uncertainty or comparison star count.

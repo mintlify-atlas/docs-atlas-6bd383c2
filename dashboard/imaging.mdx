@@ -13,12 +13,12 @@ The **Expose** form lets you trigger a single camera exposure on demand. Click *
 ```json
 POST /api/camera/expose
 {
-  "duration_s": 10.0,
+  "duration": 10.0,
   "binning": 1
 }
 ```
 
-<ParamField body="duration_s" type="float" required>
+<ParamField body="duration" type="float" required>
   Exposure duration in seconds. Fractional values are accepted (e.g. `0.5` for a half-second frame).
 </ParamField>
 
@@ -71,7 +71,7 @@ The pier camera is an optional secondary USB cameraâ€”typically a ZWO ASI unitâ€
 Enable the pier cam by setting `pier_cam.enabled: true` in `config.yaml`. When enabled, the dashboard displays a live MJPEG-style feed in the Pier Cam panel, fetched from:
 
 ```
-GET /api/pier-cam/frame
+GET /api/pier-cam/snapshot
 ```
 
 This endpoint returns a single JPEG frame on each request. The dashboard polls it at the configured frame rate to produce the live view.
@@ -105,7 +105,7 @@ Start and stop stacking with:
 | Action | Endpoint |
 |--------|----------|
 | Start live stacking | `POST /api/stack/start` |
-| Stop live stacking | `POST /api/stack/stop` |
+| Stop live stacking | `DELETE /api/stack/start` |
 
 Both endpoints accept an empty JSON body `{}`.
 

@@ -1,7 +1,7 @@
 ---
-title: "Science-Ready FITS Export with Observatory and Photometry Headers"
+title: "Enhanced FITS Export: Observatory and Photometry Headers"
 sidebarTitle: "FITS Export"
-description: "How Node v1 exports enriched FITS copies with TELESCOP, INSTRUME, BJD-OBS, AIRMASS, and processing HISTORY headers added from config and photometry results."
+description: "How Node v1 exports enriched FITS copies with TELESCOP, INSTRUME, BJD-OBS, AIRMASS, and processing HISTORY headers from config and photometry results."
 ---
 
 After a successful photometry run, Node v1 can write a science-ready copy of the FITS file enriched with observatory, detector, and processing metadata. The export preserves the original Seestar file untouched — a byte-for-byte copy is made first with `shutil.copy2`, and all additional keywords are written only into the copy. This gives downstream users and archives a self-describing file that carries its own provenance without any risk of corrupting the source data.

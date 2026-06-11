@@ -1,5 +1,5 @@
 ---
-title: "AAVSO WebObs Submission: Extended File Format and Audit Trail"
+title: "AAVSO WebObs Submission: Extended Format and Audit Trail"
 sidebarTitle: "AAVSO Submission"
 description: "How Node v1 formats photometry results as AAVSO Extended File Format, POSTs to WebObs, handles dry-run mode, and saves a full per-observation audit trail."
 ---
@@ -98,7 +98,7 @@ See the [Photometry pipeline](/pipeline/photometry) page for the full definition
 
 Every call to `submit()` writes up to three files to a date-stamped subdirectory of `aavso.audit_dir` (default: `aavso_submissions/`). Files are named using a URL-safe slug of the target name and the BJD of the observation:
 
-```
+```text
 aavso_submissions/
 └── 2025-07-14/
     ├── SN2025abc_2460500.123456.txt           ← formatted submission text

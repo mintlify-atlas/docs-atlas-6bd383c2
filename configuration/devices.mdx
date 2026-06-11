@@ -1,5 +1,5 @@
 ---
-title: "ALPACA Device Configuration for Telescope, Camera, and Focuser"
+title: "ALPACA Device and Discovery Configuration — Node v1"
 sidebarTitle: "Devices"
 description: "Configure the ALPACA devices section: enable or disable telescope, camera, focuser, filter wheel, and cover calibrator with device numbers."
 ---
@@ -103,6 +103,10 @@ Before you can connect to any device, Node v1 must locate your ALPACA server on 
 
 <ParamField path="alpaca.discovery_timeout" type="integer" default="5">
   Seconds the discovery scan waits for servers to respond. Increase this value on slow or heavily loaded networks. A value of `5` is sufficient for a direct wired or 5 GHz Wi-Fi connection.
+</ParamField>
+
+<ParamField path="alpaca.api_version" type="integer" default="1">
+  ALPACA API version used in all HTTP request paths (e.g. `/api/v1/telescope/0/ra`). Almost always `1`. Only change this if your ALPACA server explicitly requires a different version.
 </ParamField>
 
 <ParamField path="alpaca.default_server.address" type="string" default="172.22.6.32">

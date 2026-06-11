@@ -1,7 +1,7 @@
 ---
-title: "CloudCommunicator Module: Node Registration and Measurement Upload"
+title: "CloudCommunicator: Node Registration and Cloud Upload"
 sidebarTitle: "CloudCommunicator"
-description: "API reference for CloudCommunicator: constructor, start/stop, submit_measurement(), heartbeat loop, plan polling, interrupt handling, and disk-backed retry queue."
+description: "Node v1 CloudCommunicator: auto-registration, heartbeat, plan polling, interrupt handling, and disk-backed measurement upload queue."
 ---
 
 `CloudCommunicator` manages all communication between a Node v1 instance and the Boundless Skies cloud: registration, heartbeats, nightly plan polling, interrupt handling, and measurement upload with offline-queuing. When `cloud.enabled` is `false` (the default), nothing starts and the node behaves exactly as if the class were never instantiated.

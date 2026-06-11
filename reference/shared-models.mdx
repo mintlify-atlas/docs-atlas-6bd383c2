@@ -1,7 +1,7 @@
 ---
 title: "shared_models: NodeInfo, Measurement, and Plan Dataclasses"
-sidebarTitle: "shared_models"
-description: "API reference for the shared_models dataclasses: NodeInfo, TargetInfo, PlanItem, ObservationPlan, and Measurement, with to_dict() and from_dict() round-tripping."
+sidebarTitle: "Shared Models"
+description: "Node v1 shared_models: NodeInfo, TargetInfo, PlanItem, ObservationPlan, and Measurement dataclasses with dict round-tripping support."
 ---
 
 `shared_models` defines plain Python dataclasses used by both the Node agent and the Boundless Skies cloud, with dict round-tripping for interoperability. Every class provides `.to_dict()` for serialisation and `.from_dict(data)` for deserialisation; unknown keys in the input dict are silently ignored, making the module forward-compatible with schema additions. It has no heavy dependencies — nothing from Flask, astropy, or any other large library is imported — so both the node and the cloud server can import it at zero cost.

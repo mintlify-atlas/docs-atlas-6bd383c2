@@ -1,5 +1,5 @@
 ---
-title: "Differential Photometry Pipeline: From FITS to Calibrated Magnitude"
+title: "Differential Photometry Pipeline: FITS to Magnitude"
 sidebarTitle: "Photometry"
 description: "How Node v1 runs the 8-step differential photometry pipeline: WCS plate-solve, FWHM estimation, comp star queries, aperture photometry, and quality gating."
 ---
@@ -10,7 +10,7 @@ Node v1 runs a full automated differential photometry pipeline on each incoming 
 
 The pipeline processes each FITS image through eight sequential steps:
 
-```
+```text
 FITS file
   → 1. Ensure WCS         (check header; run ASTAP plate solve if absent)
   → 2. Locate target      (world_to_pixel; reject if too close to edge)
@@ -240,8 +240,8 @@ After all measurements are computed, a single quality flag is assigned based on 
 | Flag | SNR | Uncertainty | Comp stars | Airmass |
 |------|-----|-------------|------------|---------|
 | `good` | ≥ 20 | < 0.3 mag | ≥ 3 | < 3.0 |
-| `acceptable` | ≥ 10 (50% of threshold) | < 0.45 mag (1.5×) | ≥ 2 | any |
-| `poor` | < 10 | ≥ 0.45 mag | < 2 | any |
+| `acceptable` | ≥ 10 (snr_threshold × 0.5) | < 0.45 mag (max_uncertainty × 1.5) | ≥ 2 | — |
+| `poor` | else (fails both tests above) | else | else | — |
 
 The thresholds are all configurable via `config.yaml`:
 

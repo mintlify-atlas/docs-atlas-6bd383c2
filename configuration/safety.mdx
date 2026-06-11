@@ -1,7 +1,7 @@
 ---
-title: "SafetyManager Watchdog Configuration"
+title: "Node v1 SafetyManager: Watchdog and Dawn Parking Setup"
 sidebarTitle: "Safety"
-description: "Configure the Node v1 SafetyManager: heartbeat interval, reconnect attempts, dawn parking, horizon obstruction detection, and observer coordinates."
+description: "Configure the Node v1 SafetyManager: heartbeat interval, reconnect attempts, dawn parking, and observer coordinates for accurate dawn detection."
 ---
 
 The `safety:` section of `config.yaml` controls the `SafetyManager` daemon — a background watchdog thread that runs for the entire lifetime of the Node v1 process. Its job is to keep the telescope safe when things go wrong: when the ALPACA connection drops, when the network disappears, when the host machine wakes from sleep in the middle of the night, or when astronomical dawn arrives and imaging should stop. The SafetyManager is enabled by default (`safety.enabled: true`) and is intentionally designed to err on the side of caution — it parks the mount rather than leaving it tracking unattended.

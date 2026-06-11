@@ -1,5 +1,5 @@
 ---
-title: "ImageWatcher: Automated FITS File Detection from Seestar SMB Share"
+title: "Node v1 ImageWatcher: Detect New FITS Files Automatically"
 sidebarTitle: "Image Watcher"
 description: "Configure the ImageWatcher to monitor the Seestar SMB share for new FITS files and automatically trigger the photometry pipeline with debounce protection."
 ---
@@ -59,7 +59,7 @@ The Seestar S50 exposes its internal storage as a guest SMB share named `Seestar
 
     To mount automatically at boot, add the following line to `/etc/fstab`:
 
-    ```
+    ```text
     //<seestar-ip>/Seestar  /mnt/seestar  cifs  guest,uid=1000,gid=1000  0  0
     ```
   </Tab>

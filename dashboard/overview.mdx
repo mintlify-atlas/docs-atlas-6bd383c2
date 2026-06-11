@@ -53,7 +53,7 @@ The dashboard is organized into several functional panels. Use the cards below t
 
 ### Safety Panel
 
-The Safety Manager status panel appears in the dashboard sidebar. It polls `GET /api/safety/status` and displays the current safe/unsafe state, the reason for any unsafe condition, and whether the emergency park has been triggered. An **Emergency Park** button is always visible; clicking it sends `POST /api/telescope/park` immediately regardless of the current schedule or exposure state.
+The Safety Manager status panel appears in the dashboard sidebar. It polls `GET /api/safety` and displays the current safe/unsafe state, the reason for any unsafe condition, and whether the emergency park has been triggered. An **Emergency Park** button is always visible; clicking it sends `POST /api/telescope/park` immediately regardless of the current schedule or exposure state.
 
 <Warning>
   The Emergency Park button interrupts any running exposure or schedule item without saving partial data. Use it only when you need to protect the equipment.

@@ -1,7 +1,7 @@
 ---
 title: "Connect Node v1 to the Boundless Skies Cloud Network"
 sidebarTitle: "Cloud Integration"
-description: "Enable the CloudCommunicator to auto-register, send heartbeats, receive nightly observation plans, and upload photometry measurements to the Boundless Skies cloud."
+description: "Enable CloudCommunicator to auto-register your node, send heartbeats, poll nightly observation plans, and upload photometry to Boundless Skies."
 ---
 
 The `CloudCommunicator` connects your Node v1 installation to the central Boundless Skies cloud, enabling automated nightly planning, real-time measurement upload, and network-wide science coordination. When the cloud is enabled, your node auto-registers itself, sends periodic heartbeats with local conditions, polls for the current nightly observation plan, and uploads photometry results immediately after each pipeline run. When the cloud is disabled (the default), none of these threads start and the node operates entirely standalone.

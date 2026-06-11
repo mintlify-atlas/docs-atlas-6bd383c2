@@ -1,7 +1,7 @@
 ---
-title: "aavso_submission module: submit() API Reference"
-sidebarTitle: "aavso_submission"
-description: "API reference for aavso_submission.submit(): AAVSO Extended File Format, WebObs POST, result status values, audit trail files, and config keys."
+title: "aavso_submission: submit() to AAVSO WebObs Reference"
+sidebarTitle: "AAVSO Submission"
+description: "API reference for aavso_submission.submit(): Extended File Format, WebObs POST fields, 7 result keys, status values, audit trail files, and config keys."
 ---
 
 The `aavso_submission` module provides `submit()`, which takes a photometry result dict produced by `photometry.run_pipeline()` and POSTs it to the AAVSO WebObs ingestion API in the AAVSO Extended File Format. In addition to the network submission, the module writes a full audit trail to disk: the formatted submission text, the raw WebObs HTML response, and a JSON record capturing the measurement, observer code, timestamps, and final status. The function never raises — every failure path returns a result dict with `status="error"` so the caller can continue processing subsequent observations without interruption.
