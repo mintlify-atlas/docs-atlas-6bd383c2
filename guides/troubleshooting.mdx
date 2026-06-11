@@ -1,0 +1,226 @@
+---
+title: "Troubleshooting Common Node v1 Issues"
+sidebarTitle: "Troubleshooting"
+description: "Diagnose and fix common Node v1 problems: ALPACA discovery failures, plate solve errors, AAVSO submission rejections, photometry quality issues, and safety manager states."
+---
+
+This guide covers the most common issues encountered when running Node v1, with diagnostic steps and solutions for each. Most problems fall into one of four categories: network connectivity to the Seestar (ALPACA), astrometry (plate solve), photometry quality, or safety and scheduling state. Start by checking the live log stream in the dashboard — almost every failure produces a descriptive log line at WARNING or ERROR level that points directly to the cause.
+
+<AccordionGroup>
+  <Accordion title='"No ALPACA servers found"'>
+    **Symptom:** Clicking **Discover** in the dashboard times out with no servers found. The log shows no UDP responses on port 32227.
+
+    **Causes and fixes:**
+
+    - **Seestar not on the same subnet.** ALPACA discovery uses UDP broadcast, which does not cross router boundaries. Confirm that the host computer and the Seestar are on the same LAN segment. Check that both are connected to the same access point (not one on 2.4 GHz and one on 5 GHz if the router isolates bands).
+
+    - **UDP broadcast blocked by a firewall or router.** Some mesh Wi-Fi systems and corporate routers disable broadcast traffic. Test directly with:
+      ```bash
+      # macOS/Linux — listen for Seestar UDP announcements
+      tcpdump -i en0 udp port 32227
+      ```
+      If no packets appear while the Seestar is powered on, the broadcast is being filtered. Try temporarily disabling the host firewall to confirm.
+
+    - **macOS Privacy & Security.** macOS may block Python from receiving network data. Go to **System Preferences → Privacy & Security → Local Network** and ensure your Python runtime or terminal is listed and enabled.
+
+    - **Bypass discovery with a manual address.** If broadcast is not fixable, set the Seestar's IP and port directly in `config.yaml` to skip UDP discovery entirely:
+      ```yaml config.yaml
+      alpaca:
+        default_server:
+          address: "192.168.1.42"  # Seestar's IP address
+          port: 11111
+      ```
+  </Accordion>
+
+  <Accordion title='"ErrorNumber 1: Device not connected"'>
+    **Symptom:** The dashboard connects to the ALPACA server successfully but commands return `ErrorNumber 1: Device not connected`.
+
+    **Cause:** The ALPACA HTTP server on the Seestar is running and reachable, but the telescope has not been fully initialised inside the Seestar app. The ALPACA layer wraps the firmware; if the firmware is still booting or the app has not completed its startup sequence, all device calls are rejected.
+
+    **Fix:**
+    1. Open the Seestar iOS or Android app.
+    2. Wait for the app to show the telescope as fully connected and operational (the main control screen is visible, not a loading or pairing screen).
+    3. Click **Connect** in the Node v1 dashboard again.
+
+    If the error persists after the app shows connected, force-quit and relaunch the Seestar app, then try again.
+  </Accordion>
+
+  <Accordion title="Plate solve fails">
+    **Symptom:** The photometry pipeline logs `plate solve failed` or `WCS not found`. Photometry does not run.
+
+    **Causes and fixes:**
+
+    - **ASTAP not found in PATH.** The pipeline calls `astap` as a subprocess. If it is not in your system `PATH`, set the full path explicitly:
+      ```yaml config.yaml
+      photometry:
+        astap_path: "/usr/local/bin/astap"   # or wherever ASTAP is installed
+      ```
+
+    - **ASTAP star catalog not installed.** ASTAP requires a star catalog (D50 or H18) to be downloaded separately from the ASTAP solver itself. Download the catalog from [hnsky.org](https://www.hnsky.org/astap.htm) and install it to ASTAP's default catalog directory. ASTAP will fail silently with an empty result if the catalog is missing.
+
+    - **Search radius too small.** If the FITS header contains approximate coordinates but they are off by more than the search radius, ASTAP will not find a solution. Increase the radius:
+      ```yaml config.yaml
+      photometry:
+        astap_search_radius: 20   # degrees; default is 10
+      ```
+
+    Note: if the Seestar's onboard plate solve succeeded, the FITS file already contains a valid WCS and ASTAP is not called. ASTAP is only invoked as a fallback when the `CTYPE1`/`CTYPE2` WCS keywords are absent.
+  </Accordion>
+
+  <Accordion title="AAVSO submission rejected">
+    **Symptom:** The dashboard shows `aavso: rejected` or `aavso: error`. No observation appears in AAVSO WebObs.
+
+    **Diagnosis:** Check the raw WebObs response in the audit trail:
+
+    ```bash
+    ls aavso_submissions/YYYY-MM-DD/
+    cat aavso_submissions/YYYY-MM-DD/*_response.txt
+    ```
+
+    **Common causes:**
+
+    - **Invalid or expired observer code.** Your `aavso.observer_code` must match an active AAVSO OBSCODE exactly (case-sensitive). Verify yours at [aavso.org](https://www.aavso.org/). A mismatch produces an authentication error in the response file.
+
+    - **Target name not in AAVSO VSX.** The target name in the FITS header (or `photometry.target.name`) must match a VSX variable star name. Check your target spelling against VSX directly.
+
+    - **Date out of range.** WebObs rejects observations with BJD dates in the future or implausibly far in the past.
+
+    - **Validate with dry_run before going live.** Set `aavso.dry_run: true` in `config.yaml` to format and write the submission file without POSTing it. Inspect the `.txt` file in `aavso_submissions/` to confirm the format is correct, then set `dry_run: false` to submit for real.
+
+    ```yaml config.yaml
+    aavso:
+      dry_run: true   # format and save but do not POST to WebObs
+    ```
+  </Accordion>
+
+  <Accordion title='Photometry quality always "poor"'>
+    **Symptom:** Every photometry result has `quality_flag: "poor"`. Results may still be submitted if `aavso.submit_poor_quality: true`, but magnitudes are unreliable.
+
+    **Causes and fixes:**
+
+    - **Low SNR.** The target is too faint for the current exposure. Increase `stacking.exposure_s` or stack more frames before running photometry. Check `snr` in the result dict — a value below `photometry.snr_threshold` (default 20) degrades the quality flag.
+
+    - **Too few comparison stars.** The pipeline requires at least `photometry.min_comparison_stars` (default 3) comparison stars. If the target field has sparse AAVSO VSP coverage, try widening the search:
+      ```yaml config.yaml
+      photometry:
+        field_radius: 0.75    # degrees; default 0.5
+        mag_limit: 16.0       # default 15.0
+      ```
+      The Gaia DR3 fallback activates automatically if AAVSO VSP returns fewer than the minimum required.
+
+    - **Poor seeing or cloud cover.** Large ZP scatter (`zp_scatter` in the result dict) directly inflates the reported uncertainty and can push quality below the threshold. Check `fwhm` — values above ~6 pixels typically indicate poor seeing. Wait for better atmospheric conditions.
+  </Accordion>
+
+  <Accordion title='"Host is down" errors'>
+    **Symptom:** Dashboard logs show repeated `[Errno 64] Host is down` or `ConnectTimeoutError` on the Seestar's IP and port, even though the Seestar app shows the telescope as fully connected and operational.
+
+    **What happened:** The ALPACA HTTP server on the Seestar has locked up (hung, deadlocked, or crashed). The Seestar app communicates with the device firmware directly and can still control the telescope, but the ALPACA endpoint is a separate HTTP service that has failed independently.
+
+    **Recovery:**
+    1. Open the Seestar app and perform a full device restart: **Settings → Restart**.
+    2. A simple app quit and relaunch will **not** fix this — the HTTP daemon is part of the firmware and requires a full device reboot.
+    3. Once the Seestar finishes restarting, `dashboard.py` will reconnect automatically via the SafetyManager's reconnect-with-backoff logic.
+
+    This is a known firmware quirk, typically triggered by rapid successive API calls or memory pressure. If it recurs frequently, check that the node software is not issuing commands in a tight loop without delays between calls.
+  </Accordion>
+
+  <Accordion title="SafetyManager stuck in unsafe state">
+    **Symptom:** Logs show repeated heartbeat failures, an emergency park attempt, and then all slews are rejected with a message like `Slew rejected — system is in an unsafe state (telescope unreachable for Xs)` — even after the Seestar comes back online.
+
+    **What happened:** The SafetyManager lost contact for longer than `safety.disconnect_timeout` (default 600 s) and triggered an emergency park. The unsafe state does not self-clear — slews remain blocked until the session is restarted.
+
+    **Recovery:**
+    1. Confirm the Seestar is back online by opening `http://<seestar-ip>:32323/api/v1/telescope/0/connected` in a browser and verifying a valid JSON response.
+    2. Restart `dashboard.py`. The SafetyManager initialises in a safe state on every startup.
+    3. If the emergency park command also failed (logged as `park command failed`), verify the mount's physical position in the Seestar app before issuing any slew commands.
+
+    **Preventing recurrence:**
+    - Place the Seestar closer to the access point, or switch to the 2.4 GHz band for better range.
+    - Increase `safety.disconnect_timeout` if brief network glitches are common at your site (e.g., `900` or `1200` seconds).
+    - Disable Wi-Fi sleep and power-save on your router for the Seestar's MAC address.
+    - Prevent the host machine from sleeping during a session: `sudo pmset -b sleep 0` on macOS, or use a tool such as Caffeinate.
+  </Accordion>
+
+  <Accordion title='"ErrorNumber 1024: Method Unpark is not implemented in this driver"'>
+    **Symptom:** Clicking **Unpark** in the dashboard logs `ErrorNumber 1024: Method Unpark is not implemented in this driver`. The mount does not move.
+
+    **Cause:** The Seestar S50 ALPACA driver does not implement the ASCOM `Unpark` command. This is a known firmware limitation.
+
+    **Fix:** Unpark the telescope from within the official Seestar iOS or Android app. Once the app shows the mount as unparked, all dashboard slew, tracking, and nudge controls will function normally. The **Unpark** button in the Node v1 dashboard has no effect on this device and can be safely ignored.
+  </Accordion>
+
+  <Accordion title='"CoverCalibrator 400 Client Error"'>
+    **Symptom:** At startup, logs show a WARNING like `CoverCalibrator connect failed: 400 Client Error`. The dashboard shows the cover calibrator as unavailable.
+
+    **Cause:** A 400 response (rather than a connection timeout) means the ALPACA server is reachable but rejects the request — typically because no cover or calibrator device is registered at index 0 on this firmware version. This is non-fatal; all other device functions continue normally.
+
+    **Fix:** If you do not have a cover calibrator attached to your setup, suppress these warnings by disabling the device in `config.yaml`:
+
+    ```yaml config.yaml
+    devices:
+      covercalibrator:
+        enabled: false
+    ```
+
+    Dashboard arm control will show as unavailable, but telescope, camera, focuser, and filter wheel functions are unaffected.
+  </Accordion>
+
+  <Accordion title="Dawn parking not triggering">
+    **Symptom:** The Seestar is not automatically parked at dawn. The SafetyManager log shows no dawn park attempt despite the sun having risen.
+
+    **Causes and fixes:**
+
+    - **Observer coordinates are zero.** Dawn detection requires your actual location. The default values are `0.0 / 0.0` (null island in the Atlantic Ocean). Set your real coordinates:
+      ```yaml config.yaml
+      safety:
+        observer:
+          latitude: 51.5074    # decimal degrees N
+          longitude: -0.1278   # decimal degrees E (negative = West)
+      ```
+
+    - **Dawn type threshold not reached.** `dawn_type: astronomical` requires the sun to rise above −18° elevation, which at mid-latitudes in summer may never happen (astronomical twilight persists all night). Try a less strict threshold:
+      ```yaml config.yaml
+      safety:
+        dawn_type: nautical    # −12°; triggers earlier than astronomical
+        # dawn_type: civil     # −6°;  triggers earliest
+      ```
+
+    - **Verify in the dashboard.** The dashboard header displays the current sun elevation. Compare the live reading against your configured `dawn_type` threshold to confirm when parking should trigger.
+  </Accordion>
+</AccordionGroup>
+
+## Reading the Log Stream
+
+The fastest way to diagnose any issue is to watch the live log stream while reproducing the problem. Every WARNING and ERROR in Node v1 includes a descriptive message and (where applicable) the raw exception text.
+
+**Dashboard log panel:** Open `http://localhost:5173` in a browser. The **Logs** panel in the lower section of the dashboard streams all log messages in real time via Server-Sent Events, colour-coded by level (DEBUG grey, INFO white, WARNING yellow, ERROR red).
+
+**SSE endpoint:** You can also consume the log stream from the command line or another tool:
+
+```bash
+curl -N http://localhost:5173/api/logs
+```
+
+Each event is a JSON line:
+
+```json
+{"ts": "2024-07-15T22:31:05.412Z", "level": "WARNING", "logger": "cloud_communicator", "msg": "Heartbeat failed: HTTP 503: Service Unavailable"}
+```
+
+**Log level:** To increase verbosity for a specific module, set the `logging.level` key in `config.yaml`:
+
+```yaml config.yaml
+logging:
+  level: DEBUG   # DEBUG, INFO, WARNING, ERROR — default is INFO
+```
+
+At DEBUG level you will see every ALPACA HTTP request and response, every heartbeat payload, and every star detection result — useful for diagnosing intermittent issues.
+
+## Getting Help
+
+If you have worked through the steps above and the issue persists, open an issue on the [Boundless Skies Node v1 GitHub repository](https://github.com/skyrobot804/node_v1). Include:
+
+- The relevant section of the log stream (from the SSE endpoint or dashboard panel)
+- Your `config.yaml` with sensitive credentials redacted
+- The Node v1 version (`git log -1 --oneline`)
+- Your platform (macOS / Linux / Windows) and Python version

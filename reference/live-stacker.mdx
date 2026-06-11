@@ -1,0 +1,180 @@
+---
+title: "LiveStacker Module: Real-Time Frame Alignment and Accumulation"
+sidebarTitle: "LiveStacker"
+description: "API reference for LiveStacker: constructor parameters, add_frame(), stacked_image(), preview_png_b64(), reset(), and the estimate_translation() helper."
+---
+
+`LiveStacker` aligns incoming image frames via RANSAC-style translation estimation and accumulates them in a float64 running sum, delivering √N SNR improvement. It is entirely self-contained and hardware-free: feed it raw image arrays (nested lists from ALPACA or ndarrays) and it handles normalisation, star detection, alignment, and preview generation internally.
+
+## Constructor
+
+```python
+from stacking import LiveStacker
+
+st = LiveStacker(
+    detection_fwhm: float = 4.0,
+    detection_threshold: float = 5.0,
+    max_stars: int = 60,
+    match_tolerance_px: float = 2.0,
+    min_inliers: int = 4,
+    max_offset_px: float = 300.0,
+)
+```
+
+<ParamField path="detection_fwhm" type="float" default="4.0">
+  Full-width at half-maximum in pixels passed to `DAOStarFinder`. Should roughly match the typical stellar PSF diameter in your sub-frames. Increase for heavily defocused or very high-seeing images; decrease for sharply-focused small pixels.
+</ParamField>
+
+<ParamField path="detection_threshold" type="float" default="5.0">
+  Detection threshold in units of the sigma-clipped background standard deviation. Stars must exceed `threshold × σ` above the background median to be included. Raise this to suppress false detections in noisy frames; lower it only for very short exposures with few bright stars.
+</ParamField>
+
+<ParamField path="max_stars" type="int" default="60">
+  Maximum number of detected stars (sorted brightest-first) passed to the alignment algorithm. Larger values improve alignment robustness at a quadratic cost to `estimate_translation()` runtime.
+</ParamField>
+
+<ParamField path="match_tolerance_px" type="float" default="2.0">
+  Maximum residual distance in pixels for a star pair to count as an alignment inlier. Should be at least the sub-pixel centroiding uncertainty (typically 0.5–1 px) but small enough to reject false matches. Values above 3–4 px risk locking onto an incorrect translation.
+</ParamField>
+
+<ParamField path="min_inliers" type="int" default="4">
+  Minimum number of matching star pairs required to accept an alignment solution. The first frame also needs at least this many detected stars to be accepted as the reference. Raise this for more conservative alignment rejection.
+</ParamField>
+
+<ParamField path="max_offset_px" type="float" default="300.0">
+  Maximum allowed translation magnitude (in pixels, independently per axis) before a frame is rejected. Frames whose computed offset exceeds this in either the x or y direction are discarded rather than accumulated. Set to roughly the field-of-view in pixels for a conservative bound.
+</ParamField>
+
+## add_frame()
+
+```python
+st.add_frame(image_array) -> dict
+```
+
+Accepts a single new sub-frame, detects stars, computes the translation relative to the reference frame, shifts the frame to alignment, and adds it to the float64 accumulator. Returns a status dict on every call (whether or not the frame was accepted).
+
+The `image_array` argument accepts:
+
+- **2-D ndarray** — used directly as a single-channel luminance image.
+- **3-D ndarray** — collapsed to 2-D by averaging over the smallest axis (handles both ALPACA `(plane, x, y)` and `(x, y, plane)` layouts).
+- **Nested list** — converted via `np.asarray` before the 3-D collapse; this is the native format returned by ALPACA camera endpoints.
+
+The **first** usable frame (one with at least `min_inliers` detected stars) becomes the reference. Its translation is recorded as `(0.0, 0.0)` and it is added directly to the accumulator without any shift.
+
+<ResponseField name="accepted" type="bool">
+  `True` if the frame was aligned and added to the accumulator; `False` if it was rejected.
+</ResponseField>
+
+<ResponseField name="reason" type="str">
+  Human-readable explanation: `"reference frame"`, `"stacked"`, or a rejection reason such as `"alignment failed (too few matching stars)"`, `"offset out of range (dx, dy)"`, or `"frame size differs from reference"`.
+</ResponseField>
+
+<ResponseField name="frames_stacked" type="int">
+  Running count of frames that have been successfully added to the accumulator, including the reference frame.
+</ResponseField>
+
+<ResponseField name="frames_total" type="int">
+  Total number of frames submitted to `add_frame()`, including rejected ones.
+</ResponseField>
+
+<ResponseField name="frames_rejected" type="int">
+  Running count of frames that were rejected (bad shape, too few stars, alignment failure, or offset out of range).
+</ResponseField>
+
+<ResponseField name="offset" type="tuple[float, float]">
+  The `(dx, dy)` translation in pixels applied to the most recently processed frame, rounded to 2 decimal places. `(0.0, 0.0)` for the reference frame and for rejected frames.
+</ResponseField>
+
+<ResponseField name="inliers" type="int">
+  Number of matching star pairs that supported the alignment solution for the most recently processed frame. Equal to the number of detected stars for the reference frame.
+</ResponseField>
+
+<ResponseField name="snr_gain" type="float">
+  Approximate SNR improvement over a single frame: √`frames_stacked`, rounded to 2 decimal places.
+</ResponseField>
+
+## stacked_image()
+
+```python
+st.stacked_image() -> Optional[np.ndarray]
+```
+
+Returns the current mean stack as a **float32** ndarray (the float64 running sum divided by `frames_stacked`), or `None` if no frames have been successfully accumulated yet. The returned array has the same spatial dimensions as the reference frame. Suitable for saving as a FITS file or passing to the photometry pipeline.
+
+## preview_png_b64()
+
+```python
+st.preview_png_b64(max_px: int = 720) -> Optional[str]
+```
+
+Returns a base64-encoded PNG string of the current stack suitable for embedding directly in a data URI (`data:image/png;base64,...`), or `None` if the stack is empty.
+
+The preview pipeline applies:
+
+1. **Percentile stretch** — clips to the 1st–99.5th percentile range to suppress hot pixels and sky gradient.
+2. **Asinh scale** — `arcsinh(x × 10) / arcsinh(10)` lifts faint nebulosity while preserving stellar cores, matching the Seestar app's live-view appearance.
+3. **8-bit conversion** — mapped to `uint8` range 0–255.
+4. **Downsampling** — if the longest side exceeds `max_px`, the image is resized with aspect ratio preserved using PIL.
+
+## reset()
+
+```python
+st.reset() -> None
+```
+
+Clears the float64 accumulator, discards the reference star catalogue, and resets all frame counters (`frames_stacked`, `frames_total`, `frames_rejected`) and offset state to zero. Call this before starting a new stacking run — for example, when slewing to a new target or beginning a new night.
+
+## snr_gain()
+
+```python
+st.snr_gain() -> float
+```
+
+Returns the approximate SNR improvement over a single frame as a `float`: √`frames_stacked` for shot-noise-limited data. Returns `0.0` if no frames have been stacked. This is the same value reported in `add_frame()` status dicts.
+
+## estimate_translation()
+
+`estimate_translation` is a module-level function exposed for testing and external use. `LiveStacker.add_frame()` calls it internally.
+
+```python
+from stacking import estimate_translation
+
+result = estimate_translation(
+    ref: np.ndarray,        # (N, 3) array of (x, y, flux) for reference stars
+    cur: np.ndarray,        # (M, 3) array of (x, y, flux) for current frame stars
+    tolerance_px: float = 2.0,
+    max_candidates: int = 25,
+) -> Optional[tuple]        # (dx, dy, n_inliers) or None
+```
+
+<ParamField path="ref" type="np.ndarray" required>
+  An `(N, 3)` float32 array of reference star positions and fluxes, as returned by the internal `_detect_stars()` helper. The first two columns are `x` and `y` centroid positions in pixels; the third is source flux.
+</ParamField>
+
+<ParamField path="cur" type="np.ndarray" required>
+  An `(M, 3)` float32 array of current-frame star positions and fluxes in the same format as `ref`.
+</ParamField>
+
+<ParamField path="tolerance_px" type="float" default="2.0">
+  Inlier tolerance radius in pixels. A `cur` star is counted as matching a `ref` star if the squared distance after applying the candidate translation is within `tolerance_px²`.
+</ParamField>
+
+<ParamField path="max_candidates" type="int" default="25">
+  Maximum number of stars from each list considered when generating candidate translations. Only the brightest `max_candidates` stars from `ref` and `cur` are used. Reducing this speeds up the O(N²M) candidate generation at some cost to robustness.
+</ParamField>
+
+Returns a `(dx, dy, n_inliers)` tuple where `dx` and `dy` are the median-refined sub-pixel translation offsets, and `n_inliers` is the number of star pairs that agreed with the solution. Returns `None` if fewer than 2 stars are present in either list or if the best candidate has fewer than 2 supporting inliers.
+
+## _to_2d()
+
+`_to_2d(image_array) -> np.ndarray` is an internal module-level helper that forms the input normalisation layer for `add_frame()`. It converts any supported image representation to a 2-D float32 ndarray:
+
+- Nested lists are converted via `np.asarray(..., dtype=np.float32)`.
+- 3-D arrays are collapsed to 2-D by averaging along the smallest axis (colour plane), handling both `(plane, x, y)` and `(x, y, plane)` ALPACA layouts.
+- Arrays that remain non-2-D after this transformation raise `ValueError`.
+
+It is not part of the public API but is documented here because it determines which image formats `add_frame()` will accept.
+
+<Warning>
+  Field rotation on alt-az mounts is **not** corrected. `LiveStacker` applies translation-only alignment, so stars will streak at the edges of the stack as the field rotates over time. Keep individual stacking runs short — fewer than approximately 20 minutes on a Seestar S50 at typical field centres — or call `reset()` and re-seed the reference periodically to mitigate trailing. Full rotation correction is planned for a future release.
+</Warning>

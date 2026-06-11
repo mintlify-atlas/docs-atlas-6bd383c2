@@ -1,0 +1,115 @@
+---
+title: "SafetyManager Watchdog Configuration"
+sidebarTitle: "Safety"
+description: "Configure the Node v1 SafetyManager: heartbeat interval, reconnect attempts, dawn parking, horizon obstruction detection, and observer coordinates."
+---
+
+The `safety:` section of `config.yaml` controls the `SafetyManager` daemon — a background watchdog thread that runs for the entire lifetime of the Node v1 process. Its job is to keep the telescope safe when things go wrong: when the ALPACA connection drops, when the network disappears, when the host machine wakes from sleep in the middle of the night, or when astronomical dawn arrives and imaging should stop. The SafetyManager is enabled by default (`safety.enabled: true`) and is intentionally designed to err on the side of caution — it parks the mount rather than leaving it tracking unattended.
+
+---
+
+## Configuration Keys
+
+<ParamField path="safety.enabled" type="boolean" default="true">
+  Master switch for the SafetyManager. When `true`, the watchdog starts as a daemon thread at launch, installs `SIGTERM`/`SIGINT` handlers for graceful shutdown, and begins monitoring the telescope connection. Only set this to `false` for manual bench testing where you want to control the mount without any safety enforcement.
+</ParamField>
+
+<ParamField path="safety.disconnect_timeout" type="integer" default="600">
+  Seconds the telescope must be continuously unreachable before the SafetyManager triggers an emergency park and flags the system as unsafe. At the default of `600` seconds (10 minutes), brief network glitches and short Seestar reboots do not trigger a park. Increase this value if your site has intermittent Wi-Fi, e.g. `900` or `1200`. The unsafe state latches — once triggered, it does not self-clear; you must restart `dashboard.py` or use the **Reset** button in the dashboard header.
+</ParamField>
+
+<ParamField path="safety.heartbeat_interval" type="integer" default="30">
+  Seconds between connection health checks. Every `heartbeat_interval` seconds the SafetyManager queries the telescope's `RA` property; if it fails, the disconnect clock starts ticking. Lower values detect problems faster at the cost of a small increase in network traffic.
+</ParamField>
+
+<ParamField path="safety.reconnect_attempts" type="integer" default="3">
+  Number of consecutive retry attempts after a failed heartbeat before the accumulated failure time contributes to the disconnect timeout. On each failed check, the manager tries to re-establish the ALPACA connection up to `reconnect_attempts` times before waiting for the next heartbeat cycle.
+</ParamField>
+
+<ParamField path="safety.reconnect_delay" type="integer" default="10">
+  Seconds to wait between reconnect attempts. At the defaults, a failed heartbeat triggers up to 3 retries spaced 10 seconds apart before the watchdog moves on.
+</ParamField>
+
+<ParamField path="safety.park_at_dawn" type="boolean" default="true">
+  When `true`, the SafetyManager monitors the sun's elevation and parks the telescope automatically when the sun rises to the dawn threshold defined by `dawn_type`. This protects the optics from accidental daytime solar exposure and is strongly recommended for unattended operation.
+</ParamField>
+
+<ParamField path="safety.dawn_type" type="string" default="astronomical">
+  Which definition of dawn to use as the park trigger. The sun elevation threshold for each type:
+
+  - `astronomical` — sun at **−18°** (darkest; standard for deep-sky and variable-star work)
+  - `nautical` — sun at **−12°** (parks earlier; appropriate when you want a larger safety margin)
+  - `civil` — sun at **−6°** (parks at the first grey light; most conservative)
+
+  At mid-latitudes in midsummer, astronomical twilight may not occur (the sun never drops below −18°). If dawn parking never triggers during summer nights, switch to `nautical` or `civil`.
+</ParamField>
+
+<ParamField path="safety.observer.latitude" type="float" default="0.0">
+  Observer latitude in decimal degrees north of the equator. South is negative. **This field must be set to a non-zero value for dawn parking to work.** The SafetyManager uses a NOAA solar elevation algorithm that requires accurate coordinates. Set this to the same value as `observatory.latitude`.
+</ParamField>
+
+<ParamField path="safety.observer.longitude" type="float" default="0.0">
+  Observer longitude in decimal degrees east of Greenwich. West is negative. **Must also be non-zero for dawn parking.** Example: `-0.1278` for London, `151.2093` for Sydney.
+</ParamField>
+
+---
+
+## Dawn Parking
+
+When `park_at_dawn: true`, the SafetyManager computes the sun's current elevation every `heartbeat_interval` seconds using the NOAA solar position algorithm, taking `observer.latitude` and `observer.longitude` as inputs. When the sun rises above the threshold defined by `dawn_type` (−18°, −12°, or −6° for astronomical, nautical, and civil respectively), the manager issues a `Park` command to the telescope and logs a `CRITICAL`-level message.
+
+The current sun elevation is displayed in the dashboard header as `☀ +x.x°` (yellow when above the dawn threshold, dimmed when safely below it). This lets you confirm that dawn detection is working before relying on it for unattended operation.
+
+<Warning>
+`observer.latitude` and `observer.longitude` must both be set to non-zero values for dawn parking to function. If either coordinate remains at `0.0`, the sun elevation calculation will be computed for the Gulf of Guinea (0°N, 0°E) and dawn will trigger at the wrong time — or not at all. Always configure your real site coordinates before enabling unattended operation.
+</Warning>
+
+```yaml
+# Correct example for a UK site
+safety:
+  park_at_dawn: true
+  dawn_type: astronomical
+  observer:
+    latitude: 51.5074    # London
+    longitude: -0.1278
+```
+
+---
+
+## Heartbeat Watchdog
+
+The heartbeat watchdog runs in a daemon thread that loops every `heartbeat_interval` seconds. On each cycle it attempts to read the telescope's current RA coordinate via ALPACA. If that read succeeds, the system is considered healthy. If it fails, the following sequence unfolds:
+
+1. **Reconnect attempts** — the manager immediately retries up to `reconnect_attempts` times, waiting `reconnect_delay` seconds between each attempt. Log messages at `WARNING` level are emitted for each failed attempt.
+
+2. **Disconnect clock** — if all retry attempts fail, the elapsed unreachable time accumulates. As long as the telescope remains unreachable, this clock continues to increment on every heartbeat cycle.
+
+3. **Emergency park** — when the accumulated unreachable time exceeds `disconnect_timeout` seconds, the SafetyManager:
+   - Calls `_on_safety_unsafe()`, which cancels any in-progress exposure or schedule run.
+   - Issues a `Park` command to the ALPACA server (which may itself fail if the server is unreachable, logged as `park command failed`).
+   - Sets the system state to `unsafe`, blocking all subsequent slew and exposure commands.
+   - Emits a `CRITICAL` log entry: `Safety manager triggered: telescope unreachable for Xs`.
+
+4. **Latch** — the unsafe state does not self-clear even if the telescope comes back online. This is intentional: the operator must verify the mount's physical position (it may still be tracking unparked) and then either restart `dashboard.py` or click **Reset** in the dashboard header.
+
+The dashboard header always shows the current safety state: a green `SAFE` pill or a pulsing red `UNSAFE` pill with the reason. When the state is `UNSAFE`, a **Reset** button appears next to the pill.
+
+---
+
+## Complete safety: Example
+
+The following block shows the complete `safety:` section with values appropriate for a mid-latitude UK site using conservative dawn settings:
+
+```yaml config.yaml
+safety:
+  enabled: true
+  disconnect_timeout: 900   # 15 minutes — tolerates brief Wi-Fi dropouts
+  heartbeat_interval: 30
+  reconnect_attempts: 3
+  reconnect_delay: 10
+  park_at_dawn: true
+  dawn_type: nautical        # park at -12° for a safety margin
+  observer:
+    latitude: 51.5074        # London, UK
+    longitude: -0.1278
+```

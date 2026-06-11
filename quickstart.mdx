@@ -1,47 +1,198 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Boundless Skies Node v1 in 15 Minutes"
+sidebarTitle: "Quickstart"
+description: "Launch the dashboard, connect your Seestar S50 over ALPACA, configure the photometry pipeline, and trigger your first AAVSO-ready observation."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks you from a fresh Node v1 install to a working photometry observation. It is structured in two stages: a **dry run** that needs no hardware at all, followed by the steps to connect a real Seestar and enable the full pipeline. If you have not yet installed Node v1, start with the [Installation](/installation) guide first. Every config snippet below uses real keys and default values from `config.yaml` — nothing is invented.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+## Dry-Run (No Hardware Required)
 
-## Prerequisites
+Before touching any hardware, verify that the Flask server starts, the dashboard loads, and all background components initialise cleanly. The minimal config below disables every optional feature so the node starts with only the SafetyManager and dashboard active.
 
-Before you begin, you must have:
+Edit `config.yaml` and confirm these values:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+```yaml
+cloud:
+  enabled: false        # must be false — no cloud credentials yet
 
-## Get started
+image_watcher:
+  enabled: false        # must be false — don't auto-watch files yet
+
+photometry:
+  enabled: false        # must be false — don't auto-run pipeline yet
+
+pier_cam:
+  enabled: false        # must be false — optional guide camera
+
+safety:
+  enabled: true         # keep this enabled for safe operation
+
+aavso:
+  observer_code: ''     # no credentials needed for dry run
+  dry_run: true         # if you do test submission, it won't POST to AAVSO
+```
+
+Now start the server:
+
+```bash
+python main.py
+```
+
+Open [http://localhost:5173](http://localhost:5173). You should see:
+
+- ✅ Flask server starts (check the console for `Running on http://localhost:5173`)
+- ✅ Dashboard loads in the browser
+- ✅ Object catalog is browsable (powered by `pyongc` — no network required)
+- ✅ Configuration panel is editable
+- ✅ Live log panel is streaming with no errors
+
+<Note>
+  Even with no Seestar connected, you can click **Discover** (it will timeout gracefully), browse the NGC/Messier catalog, inspect and edit `config.yaml` from the browser, and test every API endpoint. This proves the core software is working before any hardware complexity.
+</Note>
+
+## Connect Your Seestar
+
+Once you have confirmed the dry run works, connect your Seestar S50. The telescope must be on the same LAN as the computer running Node v1.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Power on and network the Seestar">
+    Ensure the Seestar S50 is powered on and connected to your WiFi network in **Station Mode** (not Access Point mode). Confirm it is on the same subnet as the node computer.
+  </Step>
 
-    ```bash
-    npm install your-package
+  <Step title="Discover the ALPACA server">
+    In the dashboard, click **Discover**. Node v1 sends a UDP broadcast on port `32227`. Within a few seconds the Seestar's ALPACA server should appear in the discovered-servers list.
+
+    <Tip>
+      If discovery times out, you can connect manually: enter the Seestar's IP address and port `32323` directly in the connection fields. The default address in `config.yaml` is `172.22.6.32:32323` — replace this with your Seestar's actual IP.
+    </Tip>
+  </Step>
+
+  <Step title="Select and connect">
+    Select the discovered server from the list, then click **Connect**. The dashboard establishes an ALPACA session and polls the telescope, camera, and other configured devices.
+  </Step>
+
+  <Step title="Unpark the mount">
+    The Seestar S50 ALPACA driver does not implement the `Unpark` command. You must unpark from within the **Seestar iOS/Android app** first. After unparking in the app, return to the Node v1 dashboard — the telescope controls (slew, tracking, nudge) will work normally.
+
+    <Warning>
+      Do not attempt to slew before unparking. The SafetyManager gates all motion commands and will reject slews if the mount reports as parked.
+    </Warning>
+  </Step>
+</Steps>
+
+## Your First Observation
+
+With the Seestar connected and unparked, enable the photometry pipeline and configure your target. The pipeline runs automatically on every new FITS file delivered by the Seestar.
+
+<Steps>
+  <Step title="Enable ImageWatcher and set the watch path">
+    Edit `config.yaml` (or use the dashboard's config editor modal) to point ImageWatcher at the Seestar's SMB share:
+
+    ```yaml
+    image_watcher:
+      enabled: true
+      watch_path: "/mnt/seestar"   # replace with your actual SMB mount point
+      debounce_delay: 2.0          # seconds to wait after file write completes
+    ```
+
+    The `watch_path` is the local filesystem path where the Seestar's network share is mounted. On macOS this might be `/Volumes/Seestar`; on Linux `/mnt/seestar`; on Windows `Z:\`.
+  </Step>
+
+  <Step title="Enable the photometry pipeline and set your target">
+    ```yaml
+    photometry:
+      enabled: true
+      node_id: "node_001"    # unique identifier for your node — set this before joining the network
+
+      filter_name: "CV"      # AAVSO filter code (CV = broadband, V = Johnson-V)
+
+      target:
+        name: "SS Cyg"       # AAVSO VSX name — leave blank to use FITS header values
+        ra_deg: 321.7042     # right ascension in decimal degrees (set for your target)
+        dec_deg: 43.5861     # declination in decimal degrees
+
+      min_comparison_stars: 3
+      snr_threshold: 20
+      max_uncertainty: 0.3
+      max_airmass: 3.0
+    ```
+
+    <Note>
+      In normal operation you can leave `target.name`, `ra_deg`, and `dec_deg` blank — the pipeline reads these from the FITS header written by the Seestar. Fill them in explicitly when you want to override the header or when testing with a manually supplied FITS file.
+    </Note>
+  </Step>
+
+  <Step title="Set your node ID">
+    The `photometry.node_id` key must be a unique string that identifies your node in the Boundless Skies network. Set it once and do not change it:
+
+    ```yaml
+    photometry:
+      node_id: "node_001"
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
+  <Step title="Configure AAVSO credentials (or keep dry_run)">
+    For a first test, leave `aavso.dry_run: true`. The pipeline will format the full AAVSO Extended Format submission and write it to the audit directory, but will **not** POST to WebObs.
+
+    When you are ready for live submission:
+
+    ```yaml
+    aavso:
+      observer_code: "XXXX"         # your AAVSO OBSCODE — get one at aavso.org
+      username: "your_username"
+      password: "your_password"
+      dry_run: false                 # set to false to submit for real
+      submit_poor_quality: false     # only submit good/acceptable quality results
+      audit_dir: "aavso_submissions" # audit trail written here regardless of dry_run
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
+  <Step title="Take an exposure or wait for a file">
+    You can trigger the pipeline in two ways:
+
+    **From the dashboard:** Click **Expose** in the camera panel. The Seestar captures and saves a FITS file to the watch path. ImageWatcher detects it, runs the pipeline, and results appear in the photometry status panel.
+
+    **Wait for automatic delivery:** If the Seestar is already running a scheduled session and writing FITS files to the share, ImageWatcher picks them up automatically — no manual action needed.
+  </Step>
+
+  <Step title="Watch the live log panel">
+    The log panel streams Server-Sent Events in real time with timestamps and colour-coded log levels. A successful pipeline run looks like:
+
+    ```
+    [INFO]  ImageWatcher: new file detected — seestar_image.fits
+    [INFO]  Photometry: WCS found in header, skipping plate solve
+    [INFO]  Photometry: FWHM estimated at 3.8 px (9 stars)
+    [INFO]  Photometry: 9 comparison stars from AAVSO VSP
+    [INFO]  Photometry: magnitude 12.341 ± 0.031 (SNR 52.0, quality: good)
+    [INFO]  AAVSO: dry_run=true — submission saved to aavso_submissions/2025-01-15/
     ```
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Reviewing Results
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+After the pipeline runs, results are visible in two places:
+
+**Dashboard — Photometry & AAVSO panels:** The photometry status panel shows the most recent result: target name, BJD, magnitude, uncertainty, SNR, comparison star count, quality flag, and zero-point scatter. The AAVSO status panel shows whether the last submission was accepted, rejected, dry-run, or skipped.
+
+**Observation history panel:** A thumbnail gallery of completed observations with per-image metadata. Click any thumbnail to see the full measurement record.
+
+**`aavso_submissions/` audit directory:** Every pipeline run — including dry runs — writes a full audit trail to `aavso_submissions/YYYY-MM-DD/`:
+
+- `<target>_<bjd>.txt` — the AAVSO Extended Format text that was (or would be) submitted
+- `<target>_<bjd>_response.txt` — the raw WebObs HTTP response (or a dry-run note)
+- `<target>_<bjd>_record.json` — a complete JSON record of all measurement fields
+
+<Tip>
+  Always check `*_response.txt` if a submission is rejected. The most common causes are an invalid observer code, a target name not in AAVSO VSX, or a date outside the allowed range. Set `aavso.dry_run: true` to validate the format before going live.
 </Tip>
+
+<CardGroup cols={2}>
+  <Card title="Configuration Reference" icon="sliders" href="/configuration/overview">
+    Full reference for every key in `config.yaml` — observatory coordinates, photometry parameters, safety timeouts, and cloud settings.
+  </Card>
+  <Card title="Photometry Pipeline" icon="flask" href="/pipeline/photometry">
+    Deep-dive into the eight-step pipeline: WCS, FWHM estimation, comparison star retrieval, aperture photometry, differential photometry, and quality flags.
+  </Card>
+</CardGroup>

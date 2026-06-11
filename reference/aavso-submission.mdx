@@ -1,0 +1,154 @@
+---
+title: "aavso_submission module: submit() API Reference"
+sidebarTitle: "aavso_submission"
+description: "API reference for aavso_submission.submit(): AAVSO Extended File Format, WebObs POST, result status values, audit trail files, and config keys."
+---
+
+The `aavso_submission` module provides `submit()`, which takes a photometry result dict produced by `photometry.run_pipeline()` and POSTs it to the AAVSO WebObs ingestion API in the AAVSO Extended File Format. In addition to the network submission, the module writes a full audit trail to disk: the formatted submission text, the raw WebObs HTML response, and a JSON record capturing the measurement, observer code, timestamps, and final status. The function never raises — every failure path returns a result dict with `status="error"` so the caller can continue processing subsequent observations without interruption.
+
+---
+
+## submit()
+
+```python
+from aavso_submission import submit
+
+result = submit(measurement: dict, config: dict) -> dict
+```
+
+Formats `measurement` as AAVSO Extended File Format, optionally POSTs it to WebObs, and records the outcome to disk.
+
+<ParamField path="measurement" type="dict" required>
+  Output dict from `photometry.run_pipeline()`. The following keys are read: `target_name`, `bjd`, `magnitude`, `uncertainty`, `filter`, `airmass`, `fwhm`, `snr`, `comparison_stars`, `zp_scatter`, `node_id`, `quality_flag`, `fits_file`. Missing keys fall back to `"na"` or `0` where appropriate.
+</ParamField>
+
+<ParamField path="config" type="dict" required>
+  Loaded configuration dict. All AAVSO submission settings are read from `config["aavso"]`. See [Config Keys](#config-keys) for the full list.
+</ParamField>
+
+---
+
+## Result Dict
+
+`submit()` always returns a dict with the following keys.
+
+<ResponseField name="status" type="str">
+  Outcome of the submission attempt. One of `"accepted"`, `"rejected"`, `"skipped"`, `"dry_run"`, or `"error"`. See [Status Values](#status-values) for the exact conditions.
+</ResponseField>
+
+<ResponseField name="accepted" type="int">
+  Number of observations reported as accepted by WebObs. Parsed from the response text pattern `"N observation(s) were uploaded"`. `0` for any non-accepted status.
+</ResponseField>
+
+<ResponseField name="rejected" type="int">
+  Number of observations reported as rejected. Set to `1` if the response contains error/reject/invalid/fail keywords and no accepted count was parsed; `0` otherwise.
+</ResponseField>
+
+<ResponseField name="file_path" type="str | None">
+  Absolute path to the saved AAVSO Extended File Format text file on disk (e.g. `aavso_submissions/2025-06-01/SN2025abc_2460500.123456.txt`). `None` if the file could not be written.
+</ResponseField>
+
+<ResponseField name="response_path" type="str | None">
+  Absolute path to the saved raw WebObs HTML response file. `None` when in dry-run mode, when credentials are not configured, or if writing the response file failed.
+</ResponseField>
+
+<ResponseField name="record_path" type="str | None">
+  Absolute path to the JSON audit record written after the submission attempt. Contains the full measurement dict, observer code, `dry_run` flag, status, accepted/rejected counts, and a UTC timestamp. `None` if writing failed.
+</ResponseField>
+
+<ResponseField name="message" type="str">
+  Human-readable summary of the outcome — e.g. `"accepted=1 rejected=0"`, `"quality=poor, submission skipped"`, `"dry_run: file saved, no POST"`, or an error description.
+</ResponseField>
+
+---
+
+## Status Values
+
+| Status | Condition |
+|--------|-----------|
+| `accepted` | WebObs returned HTTP 200 and the response text contains a recognisable accepted count (`"N observation(s) were uploaded"`) with no error keywords, **or** HTTP 200 with no error keywords and no parseable count (conservative fallback). |
+| `rejected` | WebObs returned HTTP 200 but the response contains `error`, `reject`, `invalid`, or `fail` keywords and no accepted count was parsed. |
+| `skipped` | `quality_flag == "poor"` and `aavso.submit_poor_quality` is `false`; **or** credentials (`username`/`password`) are absent. |
+| `dry_run` | `aavso.dry_run` is `true` — the submission file was formatted and saved but no POST was attempted. |
+| `error` | Any other failure: `observer_code` not configured, file system errors, network timeout, connection error, non-200 HTTP status, or an unrecognisable WebObs response. |
+
+---
+
+## Config Keys
+
+All keys are nested under `config["aavso"]`.
+
+<ParamField path="aavso.observer_code" type="str" required>
+  AAVSO observer code (OBSCODE), e.g. `"MXYZ"`. Written into the `#OBSCODE=` header line of every submission. The function returns `status="error"` immediately if this key is absent or empty.
+</ParamField>
+
+<ParamField path="aavso.username" type="str">
+  AAVSO website login username. Required for live POSTs to WebObs. If absent, the submission file is saved locally but not submitted (`status="skipped"`).
+</ParamField>
+
+<ParamField path="aavso.password" type="str">
+  AAVSO website login password. Required alongside `username` for live POSTs.
+</ParamField>
+
+<ParamField path="aavso.audit_dir" type="str" default="aavso_submissions">
+  Base directory for the audit trail. Files are written under `<audit_dir>/<YYYY-MM-DD>/` using today's UTC date.
+</ParamField>
+
+<ParamField path="aavso.dry_run" type="bool" default="false">
+  When `true`, formats and saves the submission file but skips the WebObs POST entirely. Useful for testing the formatting pipeline without creating real AAVSO records.
+</ParamField>
+
+<ParamField path="aavso.submit_poor_quality" type="bool" default="false">
+  When `false` (the default), measurements with `quality_flag == "poor"` are silently skipped. Set to `true` to submit all quality levels — for example, during network downtime recovery when you want to submit everything in the queue.
+</ParamField>
+
+<ParamField path="aavso.chart_id" type="str" default="na">
+  AAVSO VSP chart ID used when creating the comparison sequence. Written into the `CHART` column of the submission. Use `"na"` if no specific chart was used.
+</ParamField>
+
+<ParamField path="aavso.submit_url" type="str" default="https://www.aavso.org/apps/webobs/submit/">
+  WebObs POST endpoint URL. Override for staging/test environments.
+</ParamField>
+
+---
+
+## Extended File Format Example
+
+Below is an example of the formatted submission text produced by `submit()` for a single observation. The `#` lines form the header; the final comma-separated line is the data record.
+
+```text
+#TYPE=Extended
+#OBSCODE=MXYZ
+#SOFTWARE=Boundless Skies Node v1
+#DELIM=,
+#DATE=BJD
+#OBSTYPE=CCD
+#NAME,DATE,MAG,MERR,FILT,TRANS,MTYPE,CNAME,CMAG,KNAME,KMAG,AMASS,GROUP,CHART,NOTES
+SN2025abc,2460500.123456,13.420,0.080,CV,NO,DIFF,ENSEMBLE,na,na,na,1.34,na,X12345Z,fwhm=3.2|snr=45.0|comp=7|zp_scatter=0.03|node=node_042|quality=good|fits=image.fits
+```
+
+Key column values:
+
+| Column | Value | Notes |
+|--------|-------|-------|
+| `TRANS` | `NO` | Not transformed to a standard photometric system |
+| `MTYPE` | `DIFF` | Differential photometry |
+| `CNAME` | `ENSEMBLE` | No single comparison star — ensemble zero-point used |
+| `CMAG` / `KMAG` | `na` | Not applicable for ensemble |
+| `NOTES` | pipe-separated metadata | Includes FWHM, SNR, comp count, ZP scatter, node ID, quality flag, and source FITS basename |
+
+---
+
+## WebObs Response Parsing
+
+After a successful HTTP POST, the module parses the raw HTML response body to determine whether the observation was accepted or rejected.
+
+1. **Accepted count** — searched with the regex `(\d+)\s+observation` (case-insensitive). A match like `"Thanks! 1 observation(s) were uploaded successfully."` yields `accepted=1`.
+
+2. **Error detection** — the response is scanned for the whole-word pattern `\b(error|reject|invalid|fail)\b` (case-insensitive). If any of these words are present and no accepted count was found, `rejected=1` is set and `status="rejected"` is returned.
+
+3. **Conservative fallback** — if the HTTP status is 200, no error keywords are found, but no observation count could be parsed (e.g. AAVSO changes their response wording), the module falls back to `accepted=1` rather than silently misclassifying a likely success as an error.
+
+4. **Non-200 responses** — any non-200 HTTP status is immediately mapped to `status="error"` with `message="HTTP <code>"`, regardless of response body content.
+
+The raw response HTML is always saved to `<audit_dir>/<YYYY-MM-DD>/<stem>_response.txt` when a POST was attempted, regardless of the parsed outcome.

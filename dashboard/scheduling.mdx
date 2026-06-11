@@ -1,0 +1,179 @@
+---
+title: "Night Scheduler: Catalog Lookup and Automated Observation Runs"
+sidebarTitle: "Scheduling"
+description: "Use the Node v1 scheduler to browse the Messier/NGC catalog, build a nightly observation queue, and run timed multi-target sequences automatically."
+---
+
+The Node v1 scheduler lets you queue multiple astronomical targets and run them as a fully automated sequence. Instead of manually slewing and starting exposures for each object, you build a list of targets—each with its own exposure settings and optional start time—and hand the list to the schedule runner. The runner slews to each target in order, waits for the requested start time if one is set, takes the configured number of frames, and then moves on to the next item, all without further intervention.
+
+## Catalog Browser
+
+The dashboard includes a built-in object catalog powered by [PyONGC](https://github.com/mattiaverga/PyONGC). Clicking the **Catalog** button in the Scheduling panel sends `GET /api/catalog`, which returns a list of Messier and NGC objects with their coordinates and common names.
+
+```json
+GET /api/catalog
+
+// Response (excerpt)
+[
+  {
+    "name": "M42",
+    "ra": 5.588,
+    "dec": -5.391,
+    "type": "Nebula",
+    "constellation": "Ori"
+  },
+  {
+    "name": "M31",
+    "ra": 0.712,
+    "dec": 41.269,
+    "type": "Galaxy",
+    "constellation": "And"
+  }
+]
+```
+
+You can filter the list by object type or search by name. When you select an entry, the dashboard auto-fills the scheduling modal with the object's RA, Dec, and name. RA values in the catalog are already in decimal hours, matching the format required by `POST /api/telescope/slew`.
+
+<Note>
+  The catalog is served from the PyONGC database bundled with the node. It does not require an internet connection at runtime. If you need objects not in the NGC/Messier catalogs, enter coordinates manually in the scheduling modal.
+</Note>
+
+## Schedule Items
+
+Each entry in the observation queue is a **schedule item** with the following fields:
+
+<ParamField body="target" type="string" required>
+  Human-readable target name (e.g. `"M42"` or `"NGC 891"`). Used for logging and history records; does not affect the slew.
+</ParamField>
+
+<ParamField body="ra" type="float" required>
+  Right ascension in **decimal hours** (0 – 24). Must match the convention used by `POST /api/telescope/slew`.
+</ParamField>
+
+<ParamField body="dec" type="float" required>
+  Declination in **decimal degrees** (−90 to +90).
+</ParamField>
+
+<ParamField body="expDur" type="float" required>
+  Duration of each individual sub-frame exposure in **seconds**.
+</ParamField>
+
+<ParamField body="expCount" type="integer" required>
+  Number of sub-frames to capture for this target.
+</ParamField>
+
+<ParamField body="binning" type="integer" required>
+  Camera binning factor (e.g. `1` for 1×1, `2` for 2×2). Applied to every exposure for this target.
+</ParamField>
+
+<ParamField body="startTime" type="string">
+  Optional wall-clock start time in `"HH:MM"` 24-hour format, interpreted in **node-local time**. If provided, the runner waits until that time before slewing to this target. If omitted, the runner starts the target immediately after the previous item completes.
+</ParamField>
+
+A complete schedule item in JSON looks like this:
+
+```json
+{
+  "target": "M42",
+  "ra": 5.588,
+  "dec": -5.391,
+  "expDur": 120.0,
+  "expCount": 20,
+  "binning": 1,
+  "startTime": "22:30"
+}
+```
+
+<Tip>
+  Set `startTime` on your first target to delay the run until astronomical twilight ends. Leave subsequent targets without a `startTime` so they start back-to-back as soon as the previous sequence finishes.
+</Tip>
+
+## Running a Schedule
+
+Once you have added at least one item to the queue, click **Run Schedule** to start the automated sequence. This sends `POST /api/schedule/run` with the full items array:
+
+```json
+POST /api/schedule/run
+{
+  "items": [
+    {
+      "target": "M42",
+      "ra": 5.588,
+      "dec": -5.391,
+      "expDur": 120.0,
+      "expCount": 20,
+      "binning": 1,
+      "startTime": "22:30"
+    },
+    {
+      "target": "M31",
+      "ra": 0.712,
+      "dec": 41.269,
+      "expDur": 180.0,
+      "expCount": 15,
+      "binning": 1
+    }
+  ]
+}
+```
+
+The schedule runner processes items sequentially:
+
+<Steps>
+  <Step title="Wait for start time (if set)">
+    If the item has a `startTime`, the runner idles until that wall-clock time is reached.
+  </Step>
+  <Step title="Slew to target">
+    The runner sends `POST /api/telescope/slew` with the item's RA and Dec, then waits for the slew to complete.
+  </Step>
+  <Step title="Capture frames">
+    The runner calls `POST /api/camera/expose` repeatedly—once per frame—with the item's `expDur` and `binning` values, until `expCount` frames have been saved.
+  </Step>
+  <Step title="Advance to next item">
+    After the final frame, the runner immediately moves to the next item in the list (or idles until its `startTime` if one is set).
+  </Step>
+</Steps>
+
+To abort a running schedule at any time, click **Stop Schedule**, which sends `POST /api/schedule/stop`. The current exposure is allowed to complete before the runner halts; it does not park the mount automatically.
+
+<Warning>
+  Stopping the schedule does not cancel the in-progress exposure. If you need an immediate halt of both the schedule and the camera, use the **Emergency Park** button in the Safety panel instead.
+</Warning>
+
+Progress for each item is reported in the live log stream and the schedule panel shows which item is currently active.
+
+## Cloud Plans
+
+When the node is enrolled in the Boundless Skies cloud service and `cloud.auto_run_plans: true` is set in `config.yaml`, nightly observation plans generated by the cloud are automatically delivered to the node and fed to the schedule runner at the appropriate time. You do not need to build the queue manually; the plan arrives before sunset and is queued as a standard items array.
+
+You can review the incoming plan in the Scheduling panel before it runs, and you can override or cancel it by clicking **Stop Schedule** and rebuilding the queue manually.
+
+For full details on cloud enrollment, plan delivery, and override behavior, see the [Cloud Integration guide](/guides/cloud-integration).
+
+<Note>
+  Manual schedules you start through the dashboard always take priority over a pending cloud plan. If a manual run is already active when a cloud plan arrives, the cloud plan is queued and starts after the manual run completes (or is discarded if `cloud.discard_on_conflict: true`).
+</Note>
+
+## Observation History
+
+Every completed schedule item and manual exposure is recorded in the node's observation history. To view past sessions, click **History** in the dashboard header to open the history modal. The modal data comes from:
+
+```json
+GET /api/history
+
+// Response (excerpt)
+[
+  {
+    "timestamp": "2025-07-14T22:31:04Z",
+    "target": "M42",
+    "ra": 5.588,
+    "dec": -5.391,
+    "expDur": 120.0,
+    "expCount": 20,
+    "binning": 1,
+    "fits_files": ["m42_001.fits", "m42_002.fits", "..."]
+  }
+]
+```
+
+History entries include the FITS filenames produced during the run, so you can quickly locate the raw data for any past observation. Clicking a filename in the history modal opens it directly in the FITS browser.

@@ -1,0 +1,275 @@
+---
+title: "photometry module: run_pipeline() API Reference"
+sidebarTitle: "photometry"
+description: "API reference for photometry.run_pipeline(): inputs, pipeline steps, output dict fields, quality flag logic, and internal helper functions."
+---
+
+The `photometry` module provides a single public entry point, `run_pipeline()`, which executes the complete 8-step differential photometry pipeline on a FITS file. The pipeline loads the image, confirms WCS coverage via plate solving, estimates the PSF, fetches comparison stars from AAVSO VSP (falling back to Gaia DR3), performs aperture photometry, derives a differential magnitude through a weighted ensemble zero-point, and attaches a quality flag before returning. The result dict is shaped to map directly onto the AAVSO Extended File Format fields consumed by `aavso_submission.submit()`.
+
+---
+
+## run_pipeline()
+
+```python
+from photometry import run_pipeline
+
+result = run_pipeline(fits_path: str, config: dict) -> Optional[dict]
+```
+
+Runs the full photometry pipeline on a single FITS file. The target identity (name, RA, Dec) is read from the FITS header first and may be overridden by `config["photometry"]["target"]`. Returns a measurement dict on success, or `None` on any unrecoverable failure — bad file, failed plate solve, no comparison stars in the field, non-positive target flux, and so on.
+
+<ParamField path="fits_path" type="str" required>
+  Absolute or relative path to the FITS file to be processed. Must be a valid FITS image with a primary HDU containing 2-D (or 3-D cube) float data. Non-`LIGHT` frames (bias, dark, flat) are silently skipped and `None` is returned.
+</ParamField>
+
+<ParamField path="config" type="dict" required>
+  Loaded configuration dictionary, typically deserialized from `config.yaml`. The pipeline reads keys under `config["photometry"]`, `config["safety"]["observer"]`, and related sub-trees. See [Config Keys Consumed](#config-keys-consumed) for the full list.
+</ParamField>
+
+---
+
+## Output Dict Fields
+
+On success, `run_pipeline()` returns a dict with the following 14 keys. All numeric values are rounded to the precision shown.
+
+<ResponseField name="target_name" type="str">
+  Object name sourced from the FITS `OBJECT` header keyword or `config["photometry"]["target"]["name"]`.
+</ResponseField>
+
+<ResponseField name="bjd" type="float">
+  Barycentric Julian Date in the TCB time scale (BJD_TCB), derived from the `DATE-OBS` FITS header keyword. Rounded to 6 decimal places (~86 ms precision). Falls back to the current time if `DATE-OBS` is absent or unparseable.
+</ResponseField>
+
+<ResponseField name="magnitude" type="float">
+  Calibrated differential magnitude of the target, computed as the instrumental magnitude plus the weighted ensemble zero-point. Rounded to 4 decimal places.
+</ResponseField>
+
+<ResponseField name="uncertainty" type="float">
+  Total photometric uncertainty in magnitudes, computed as the quadrature sum of the target Poisson noise term (`1.0857 × flux_err / flux`) and the zero-point scatter across all comparison stars. Rounded to 4 decimal places.
+</ResponseField>
+
+<ResponseField name="filter" type="str">
+  Filter name string as configured in `photometry.filter_name` (default `"CV"`). Written verbatim into the AAVSO submission record.
+</ResponseField>
+
+<ResponseField name="airmass" type="float">
+  Airmass at the time of observation. Priority: (1) `AIRMASS` FITS header keyword; (2) computed from target coordinates, `DATE-OBS`, and observer lat/lon; (3) fallback value `1.5`. Rounded to 3 decimal places.
+</ResponseField>
+
+<ResponseField name="fwhm" type="float">
+  Estimated image full-width at half-maximum in pixels, derived from second-moment Gaussian fits to a sample of non-saturated field stars via `DAOStarFinder`. Falls back to `4.0` px if estimation fails. Rounded to 2 decimal places.
+</ResponseField>
+
+<ResponseField name="snr" type="float">
+  Signal-to-noise ratio of the target aperture measurement (`net_flux / flux_error`). Rounded to 1 decimal place.
+</ResponseField>
+
+<ResponseField name="comparison_stars" type="int">
+  Number of comparison stars that contributed a valid zero-point entry — i.e., were in-field, had positive flux, and had a known reference magnitude.
+</ResponseField>
+
+<ResponseField name="quality_flag" type="str">
+  One of `"good"`, `"acceptable"`, or `"poor"`. See [Quality Flag Logic](#quality-flag-logic) for the full threshold table.
+</ResponseField>
+
+<ResponseField name="node_id" type="str">
+  Node identifier string from `photometry.node_id` in config (default `"node_unknown"`). Included in the AAVSO notes field and FITS HISTORY.
+</ResponseField>
+
+<ResponseField name="zero_point" type="float">
+  Weighted-average photometric zero-point (in magnitudes) derived from all valid comparison stars in the field. Rounded to 3 decimal places.
+</ResponseField>
+
+<ResponseField name="zp_scatter" type="float">
+  Standard deviation of the individual comparison-star zero-point values. A proxy for systematic error in the zero-point determination. Rounded to 3 decimal places.
+</ResponseField>
+
+<ResponseField name="fits_file" type="str">
+  Basename (filename only, no directory) of the input FITS file — e.g. `"image_20250601_023412.fits"`.
+</ResponseField>
+
+---
+
+## Quality Flag Logic
+
+The quality flag is assigned at the end of the pipeline using thresholds drawn directly from the config. All four conditions must hold for `"good"`; a relaxed subset suffices for `"acceptable"`; everything else is `"poor"`.
+
+| Flag | Conditions |
+|------|------------|
+| `good` | `snr ≥ snr_threshold` **AND** `uncertainty < max_uncertainty` **AND** `comparison_stars ≥ min_comparison_stars` **AND** `airmass < max_airmass` |
+| `acceptable` | `snr ≥ snr_threshold × 0.5` **AND** `uncertainty < max_uncertainty × 1.5` **AND** `comparison_stars ≥ 2` |
+| `poor` | All other cases — any combination of low SNR, large uncertainty, too few comparison stars, or extreme airmass |
+
+By default, `aavso_submission.submit()` skips `"poor"` measurements unless `aavso.submit_poor_quality: true` is set in config.
+
+---
+
+## Config Keys Consumed
+
+The following config keys are read by `run_pipeline()`. All are nested under the top-level `photometry` key unless noted otherwise.
+
+<ParamField path="photometry.node_id" type="str" default="node_unknown">
+  Identifier string for this observing node, written into the result dict and FITS HISTORY.
+</ParamField>
+
+<ParamField path="photometry.filter_name" type="str" default="CV">
+  AAVSO filter code to record in the result (e.g. `"CV"`, `"V"`, `"B"`, `"Ic"`).
+</ParamField>
+
+<ParamField path="photometry.gain" type="float" default="1.0">
+  CCD gain in e⁻/ADU. Used in the CCD noise model for flux error calculation. Overridden by `EGAIN` or `CCDGAIN` FITS header keywords if present.
+</ParamField>
+
+<ParamField path="photometry.read_noise" type="float" default="5.0">
+  Detector read noise in electrons. Used in the CCD noise model. Overridden by the `RDNOISE` FITS header keyword if present.
+</ParamField>
+
+<ParamField path="photometry.target" type="dict">
+  Optional target override sub-tree. Supported keys: `name` (str), `ra_deg` (float), `dec_deg` (float). Values here take priority over the FITS `OBJECT`, `RA`, and `DEC` keywords.
+</ParamField>
+
+<ParamField path="photometry.astap_path" type="str" default="astap">
+  Path to the ASTAP executable. Must be on `$PATH` or an absolute path. ASTAP is invoked only when the FITS file lacks a WCS (`CRVAL1`/`CD1_1` or `CRVAL1`/`CDELT1`).
+</ParamField>
+
+<ParamField path="photometry.astap_search_radius" type="float" default="10">
+  ASTAP plate-solve search radius in degrees. Larger values slow solving but tolerate larger pointing errors.
+</ParamField>
+
+<ParamField path="photometry.aperture_factor" type="float" default="2.5">
+  Multiplier applied to the measured FWHM to set the photometric aperture radius: `ap_radius = max(3.0, fwhm × aperture_factor)`.
+</ParamField>
+
+<ParamField path="photometry.annulus_inner" type="float" default="4.0">
+  Inner sky-annulus radius as a multiple of FWHM: `ann_inner = max(ap_radius + 1.0, fwhm × annulus_inner)`.
+</ParamField>
+
+<ParamField path="photometry.annulus_outer" type="float" default="6.0">
+  Outer sky-annulus radius as a multiple of FWHM: `ann_outer = max(ann_inner + 3.0, fwhm × annulus_outer)`.
+</ParamField>
+
+<ParamField path="photometry.field_radius" type="float" default="0.5">
+  Search radius in degrees for comparison star queries (AAVSO VSP and Gaia DR3).
+</ParamField>
+
+<ParamField path="photometry.mag_limit" type="float" default="15.0">
+  Faint magnitude limit for comparison star queries. Stars fainter than this value are excluded.
+</ParamField>
+
+<ParamField path="photometry.min_comparison_stars" type="int" default="3">
+  Minimum number of comparison stars required for a `"good"` quality flag.
+</ParamField>
+
+<ParamField path="photometry.snr_threshold" type="float" default="20">
+  SNR threshold for a `"good"` quality flag. Half this value is used for `"acceptable"`.
+</ParamField>
+
+<ParamField path="photometry.max_uncertainty" type="float" default="0.3">
+  Maximum allowed uncertainty (magnitudes) for a `"good"` quality flag. 1.5× this value is used for `"acceptable"`.
+</ParamField>
+
+<ParamField path="photometry.max_airmass" type="float" default="3.0">
+  Maximum airmass for a `"good"` quality flag. Not applied to `"acceptable"`.
+</ParamField>
+
+---
+
+## Internal Helpers
+
+These functions are not part of the public API but are documented here for contributors and users who want to extend the pipeline. All are defined at module scope with a leading underscore.
+
+### `_ensure_wcs`
+
+```python
+_ensure_wcs(
+    fits_path: str,
+    ra_deg: float,
+    dec_deg: float,
+    astap_path: str,
+    search_radius: float,
+) -> bool
+```
+
+Returns `True` if the FITS file already contains a valid WCS (checked for `CRVAL1`+`CD1_1` or `CRVAL1`+`CDELT1` keywords). If no WCS is found, delegates to `_run_astap()`. Called at Step 1 of the pipeline.
+
+### `_run_astap`
+
+```python
+_run_astap(
+    fits_path: str,
+    ra_deg: float,
+    dec_deg: float,
+    astap_path: str,
+    search_radius: float,
+) -> bool
+```
+
+Invokes the ASTAP CLI with `-update` to write WCS keywords directly into the FITS file. Converts RA to decimal hours and Dec to South Polar Distance (SPD = 90 + dec) as required by ASTAP. Times out after 90 seconds.
+
+### `_estimate_fwhm`
+
+```python
+_estimate_fwhm(data: np.ndarray) -> float
+```
+
+Estimates PSF FWHM in pixels using `DAOStarFinder` on sigma-clipped data. Fits second-moment Gaussians on 21×21 pixel stamps around the median-brightness subset of detected sources (top 10% excluded as potentially saturated, bottom 50% excluded as faint). Falls back to `4.0` px on any exception.
+
+### `_get_comparison_stars_aavso`
+
+```python
+_get_comparison_stars_aavso(
+    target_name: str,
+    ra_deg: float,
+    dec_deg: float,
+    field_radius_deg: float,
+    mag_limit: float,
+) -> list
+```
+
+Queries the AAVSO Variable Star Plotter (VSP) API at `https://www.aavso.org/apps/vsp/api/chart/`. Returns a list of dicts each containing `auid`, `ra_deg`, `dec_deg`, `mag_v`, `mag_err`, `source`. Prefers V-band magnitude; falls back to B then R. Returns `[]` if fewer than 3 stars are found (the caller then queries Gaia).
+
+### `_get_comparison_stars_gaia`
+
+```python
+_get_comparison_stars_gaia(
+    ra_deg: float,
+    dec_deg: float,
+    field_radius_deg: float,
+    mag_limit: float,
+    n_max: int = 15,
+) -> list
+```
+
+Queries Gaia DR3 via `astroquery.gaia` for comparison stars. Converts G-band magnitude to V-band using the Evans et al. 2018 (A&A 616, A4) BP–RP color transformation when color data is available. Stars with G > `mag_limit`, G < 8.0 (risk of saturation), or flux S/N < 50 are excluded.
+
+### `_aperture_photometry`
+
+```python
+_aperture_photometry(
+    data: np.ndarray,
+    positions: list,       # [(x, y), ...]  pixel coords
+    ap_radius: float,
+    ann_inner: float,
+    ann_outer: float,
+    read_noise: float = 5.0,   # electrons
+    gain: float = 1.0,         # e⁻/ADU
+) -> tuple
+```
+
+Measures background-subtracted flux and CCD-noise-model flux errors at each pixel position. Sky background is estimated per-aperture from the sigma-clipped median of the annulus pixels. Returns `(fluxes, flux_errors)` as NumPy arrays, or `(None, None)` on failure.
+
+### `_compute_bjd`
+
+```python
+_compute_bjd(header: dict) -> float
+```
+
+Parses `DATE-OBS` from the FITS header and converts it to BJD_TCB using `astropy.time.Time.tcb.jd`. Falls back to `Time.now().tcb.jd` if the keyword is absent or unparseable.
+
+### `_compute_airmass`
+
+```python
+_compute_airmass(header: dict, config: dict) -> float
+```
+
+Returns airmass by priority: (1) `AIRMASS` header keyword; (2) geometric computation from target RA/Dec, `DATE-OBS`, and `safety.observer.latitude`/`longitude` from config; (3) fallback value `1.5`. Clips to `5.76` (sec 85°) for very low altitudes.

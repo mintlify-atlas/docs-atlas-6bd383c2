@@ -1,0 +1,456 @@
+---
+title: "config.yaml: Complete Node v1 Configuration Reference"
+sidebarTitle: "Overview"
+description: "All top-level config.yaml sections explained: ALPACA discovery, observatory, logging, image watcher, pier cam, stacking, and cloud connection."
+---
+
+Node v1 is configured entirely through a single `config.yaml` file located in the project root directory. Every feature — from ALPACA device connections and the photometry pipeline to safety timeouts and cloud registration — is controlled by the keys in this file. No environment setup or command-line flags are required for normal operation. The dashboard also includes a live in-browser config editor so you can adjust settings without leaving your browser.
+
+## Full Annotated config.yaml
+
+The block below is the complete `config.yaml` with every key shown at its default value. Copy this as a starting point and edit the values relevant to your setup.
+
+```yaml config.yaml
+alpaca:
+  discovery_port: 32227
+  discovery_timeout: 5
+  api_version: 1
+  default_server:
+    address: 172.22.6.32
+    port: 32323
+
+devices:
+  telescope:
+    enabled: true
+    device_number: 0
+  camera:
+    enabled: true
+    device_number: 0
+  focuser:
+    enabled: false
+    device_number: 0
+  filterwheel:
+    enabled: false
+    device_number: 0
+  covercalibrator:
+    enabled: true
+    device_number: 0
+
+telescope:
+  slew_ra: 23.6833
+  slew_dec: 80.2692
+  tracking_rate: 0
+
+camera:
+  exposure_duration: 1.0
+  binning: 1
+
+autofocus:
+  exposure_s: 2.0          # short exposure per focus sample
+  step_size: 50            # focuser steps between samples
+  steps_per_side: 5        # sweep visits 2*steps_per_side + 1 positions
+  settle_s: 1.0            # vibration settle after each move
+  samples_per_point: 1     # frames median-combined per position (>1 fights noise)
+  min_position: null       # hard focuser travel floor (null = none)
+  max_position: null       # hard focuser travel ceiling (null = none)
+
+centering:
+  exposure_s: 3.0          # exposure per plate-solve frame
+  tolerance_arcmin: 3.0    # stop once target is within this of frame centre
+  max_iterations: 4        # give up after this many solve attempts
+  settle_s: 2.0            # vibration settle after each slew
+
+stacking:
+  frames: 20               # number of sub-frames to capture and stack
+  exposure_s: 10.0         # per sub-frame exposure
+  preview_every: 1         # re-render the live preview every N stacked frames
+
+logging:
+  level: INFO
+  format: '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+
+pier_cam:
+  enabled: false
+  device_index: 0
+  sdk_lib: ''
+  exposure_ms: 80
+  gain: 200
+  bin: 2
+  target_fps: 10
+  jpeg_quality: 75
+
+image_watcher:
+  enabled: false
+  watch_path: /mnt/seestar
+  debounce_delay: 2.0
+
+observatory:
+  name: ''
+  latitude: null
+  longitude: null
+  elevation: 0.0
+  telescope: ZWO Seestar S50
+  instrument: ZWO Seestar S50 IMX462
+  observer: ''
+
+photometry:
+  enabled: false
+  node_id: node_001
+  filter_name: CV
+  gain: 1.0
+  read_noise: 5.0
+  target:
+    name: ''
+    ra_deg: null
+    dec_deg: null
+  astap_path: astap
+  astap_search_radius: 10
+  aperture_factor: 2.5
+  annulus_inner: 4.0
+  annulus_outer: 6.0
+  field_radius: 0.5
+  mag_limit: 15.0
+  min_comparison_stars: 3
+  snr_threshold: 20
+  max_uncertainty: 0.3
+  max_airmass: 3.0
+  fits_export:
+    enabled: true
+    export_dir: fits_export
+
+aavso:
+  observer_code: ''
+  username: ''
+  password: ''
+  audit_dir: aavso_submissions
+  dry_run: false
+  submit_poor_quality: false
+  chart_id: ''
+
+cloud:
+  enabled: false
+  url: ''                      # e.g. https://cloud.boundless-skies.org
+  node_id: ''                  # blank = auto-register on first start
+  api_key: ''                  # blank = auto-register on first start
+  heartbeat_interval: 60       # seconds between heartbeats (with conditions)
+  plan_poll_interval: 300      # seconds between observation-plan polls
+  auto_run_plans: false        # execute cloud plans automatically when idle
+  upload_images: false         # also upload raw FITS after each measurement
+
+safety:
+  enabled: true
+  disconnect_timeout: 600
+  heartbeat_interval: 30
+  reconnect_attempts: 3
+  reconnect_delay: 10
+  park_at_dawn: true
+  dawn_type: astronomical
+  observer:
+    latitude: 0.0
+    longitude: 0.0
+```
+
+## Editing the Config
+
+There are two ways to update `config.yaml`:
+
+1. **Edit the file directly** — open `config.yaml` in any text editor, save your changes, and restart `dashboard.py`. The server reads `config.yaml` once at startup and again whenever it needs to re-load settings (such as when the photometry pipeline processes a new file).
+
+2. **Use the in-browser editor** — open the dashboard at `http://localhost:5173` and click the **Config** button in the top-right corner. The editor supports both a structured form view (organised by section) and a raw YAML view. Changes written through the editor are saved to disk immediately; they take full effect after the server is restarted.
+
+<Note>
+The in-browser config editor validates your YAML before saving — if there is a syntax error, the save will be rejected and the error will be shown inline. Changes to `photometry`, `safety`, `cloud`, and `image_watcher` require a server restart to take effect because those subsystems are initialised once at launch.
+</Note>
+
+## Top-Level Sections
+
+The table below summarises every top-level section. Click the links for the sections that have dedicated reference pages.
+
+<CardGroup cols={2}>
+  <Card title="alpaca" icon="network-wired">
+    ALPACA protocol settings: UDP discovery port and timeout, API version, and the default server address. See **ALPACA Discovery** below.
+  </Card>
+  <Card title="devices" icon="plug" href="/configuration/devices">
+    Which ALPACA devices (telescope, camera, focuser, filter wheel, cover calibrator) to connect on startup, and their device index numbers. See the **Devices** page.
+  </Card>
+  <Card title="photometry + aavso" icon="star" href="/configuration/photometry">
+    The differential photometry pipeline and AAVSO WebObs submission credentials. See the **Photometry** page.
+  </Card>
+  <Card title="safety" icon="shield-halved" href="/configuration/safety">
+    The SafetyManager watchdog: heartbeat interval, reconnect logic, dawn parking, and observer coordinates. See the **Safety** page.
+  </Card>
+  <Card title="observatory" icon="telescope">
+    Site metadata written into FITS headers: site name, latitude, longitude, elevation, instrument name, and observer identifier.
+  </Card>
+  <Card title="logging" icon="file-lines">
+    Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) and the log record format string.
+  </Card>
+  <Card title="image_watcher" icon="eye">
+    File-system watcher that detects new FITS files on the Seestar SMB share and triggers the photometry pipeline. Set `watch_path` to the SMB mount point.
+  </Card>
+  <Card title="pier_cam" icon="video">
+    Optional live video preview from a ZWO ASI guide camera at the pier, streamed as MJPEG to the dashboard. Requires the `zwoasi` Python package.
+  </Card>
+  <Card title="stacking" icon="layer-group">
+    Live stacking settings: how many sub-frames to capture, the exposure time per frame, and how often to re-render the stacked preview in the dashboard.
+  </Card>
+  <Card title="cloud" icon="cloud">
+    Connection to the Boundless Skies cloud coordinator: endpoint URL, node credentials, heartbeat cadence, observation-plan polling, and whether to auto-execute plans.
+  </Card>
+</CardGroup>
+
+---
+
+## alpaca
+
+These keys control how Node v1 discovers and communicates with ALPACA servers on your local network.
+
+<ParamField path="alpaca.discovery_port" type="integer" default="32227">
+  UDP broadcast port used during LAN discovery. The ALPACA specification defines port 32227. Only change this if your server uses a non-standard port.
+</ParamField>
+
+<ParamField path="alpaca.discovery_timeout" type="integer" default="5">
+  Seconds to wait for ALPACA servers to respond during a discovery scan. Increase on slow or congested networks.
+</ParamField>
+
+<ParamField path="alpaca.api_version" type="integer" default="1">
+  ALPACA API version to use in all HTTP request paths. Almost always `1`. Only change this if your server explicitly requires a different version.
+</ParamField>
+
+<ParamField path="alpaca.default_server.address" type="string" default="172.22.6.32">
+  IP address of the default ALPACA server. When the dashboard runs a discovery scan and finds this address, it auto-connects without showing the server-selection dialog. Set automatically when you tick **Set as default** in the connect dialog.
+</ParamField>
+
+<ParamField path="alpaca.default_server.port" type="integer" default="32323">
+  Port of the default ALPACA server. Paired with `default_server.address` for auto-connect.
+</ParamField>
+
+---
+
+## observatory
+
+Observatory metadata embedded in every exported FITS file via `fits_export.py`. These values are written as standard FITS keywords (`TELESCOP`, `INSTRUME`, `OBSERVER`, `SITELAT`, `SITELONG`, `SITEELEV`).
+
+<ParamField path="observatory.name" type="string" default="">
+  Human-readable name for the observing site. Example: `"Boundless Skies Node 001"`.
+</ParamField>
+
+<ParamField path="observatory.latitude" type="float" default="null">
+  Site latitude in decimal degrees north of the equator. South is negative. Example: `51.5074` for London, `-33.8688` for Sydney.
+</ParamField>
+
+<ParamField path="observatory.longitude" type="float" default="null">
+  Site longitude in decimal degrees east of Greenwich. West is negative. Example: `-0.1278` for London, `151.2093` for Sydney.
+</ParamField>
+
+<ParamField path="observatory.elevation" type="float" default="0.0">
+  Site elevation above sea level in metres. Used in FITS header metadata.
+</ParamField>
+
+<ParamField path="observatory.telescope" type="string" default="ZWO Seestar S50">
+  Telescope name written to the `TELESCOP` FITS keyword.
+</ParamField>
+
+<ParamField path="observatory.instrument" type="string" default="ZWO Seestar S50 IMX462">
+  Detector or instrument name written to the `INSTRUME` FITS keyword.
+</ParamField>
+
+<ParamField path="observatory.observer" type="string" default="">
+  Observer name or AAVSO observer code written to the `OBSERVER` FITS keyword.
+</ParamField>
+
+---
+
+## logging
+
+Controls Python's standard logging system for the entire Node v1 process, including the dashboard, safety manager, photometry pipeline, and all sub-modules.
+
+<ParamField path="logging.level" type="string" default="INFO">
+  Minimum log severity to emit. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Use `DEBUG` when diagnosing problems; `INFO` is recommended for normal operation.
+</ParamField>
+
+<ParamField path="logging.format" type="string" default="%(asctime)s [%(levelname)s] %(name)s: %(message)s">
+  Python `logging` format string. The default includes a timestamp, severity level, logger name, and message. Refer to the [Python logging docs](https://docs.python.org/3/library/logging.html#logrecord-attributes) for available fields.
+</ParamField>
+
+---
+
+## image_watcher
+
+The `ImageWatcher` daemon monitors a directory for newly written FITS files, typically the SMB share mount point of a Seestar S50 on the local network. When a new file appears it is displayed in the dashboard and, if `photometry.enabled` is `true`, automatically fed into the photometry pipeline.
+
+<ParamField path="image_watcher.enabled" type="boolean" default="false">
+  Set to `true` to start the file-system watcher on launch. Requires `watch_path` to be set correctly.
+</ParamField>
+
+<ParamField path="image_watcher.watch_path" type="string" default="/mnt/seestar">
+  Absolute path to the directory to monitor. For a Seestar on your network, mount its SMB share first (e.g. `sudo mount -t cifs //192.168.1.x/seestar /mnt/seestar`) and point this key at the mount point.
+</ParamField>
+
+<ParamField path="image_watcher.debounce_delay" type="float" default="2.0">
+  Seconds to wait after a file-system event before reading the new file. Prevents reading a FITS file that is still being written. 2.0 seconds is safe for most SMB shares; increase on slow network connections.
+</ParamField>
+
+---
+
+## pier_cam
+
+Configures an optional ZWO ASI guide or pier camera whose live video feed is streamed as MJPEG to the dashboard. Requires the `zwoasi` Python package (`pip install zwoasi`) and the ZWO ASI SDK shared library.
+
+<ParamField path="pier_cam.enabled" type="boolean" default="false">
+  Set to `true` to start the pier camera loop on launch. The live view panel appears automatically in the dashboard when streaming begins.
+</ParamField>
+
+<ParamField path="pier_cam.device_index" type="integer" default="0">
+  ZWO SDK camera index. Usually `0` for the first connected ASI camera. This is a ZWO SDK index, not an ALPACA device number.
+</ParamField>
+
+<ParamField path="pier_cam.sdk_lib" type="string" default="">
+  Full path to the ZWO ASI SDK shared library (e.g. `/usr/lib/libASICamera2.so` on Linux, `/usr/local/lib/libASICamera2.dylib` on macOS). Leave blank to let `zwoasi` auto-detect the library.
+</ParamField>
+
+<ParamField path="pier_cam.exposure_ms" type="integer" default="80">
+  Exposure time per preview frame in milliseconds. Shorter exposures give a higher frame rate but may be noisier in low light.
+</ParamField>
+
+<ParamField path="pier_cam.gain" type="integer" default="200">
+  Camera gain (0–600 for most ZWO cameras). Higher gain increases sensitivity at the cost of more noise.
+</ParamField>
+
+<ParamField path="pier_cam.bin" type="integer" default="2">
+  Binning factor for preview frames. `2` means 2×2 binning — half the linear resolution, four times faster readout. Recommended for most setups.
+</ParamField>
+
+<ParamField path="pier_cam.target_fps" type="integer" default="10">
+  Target preview frame rate in frames per second. The actual rate is capped by `exposure_ms` and USB bandwidth.
+</ParamField>
+
+<ParamField path="pier_cam.jpeg_quality" type="integer" default="75">
+  JPEG compression quality for streamed frames (10–100). Lower values produce smaller frames and smoother streaming; higher values give sharper images.
+</ParamField>
+
+---
+
+## stacking
+
+Controls the live stacking feature, which captures multiple sub-frames, aligns them via cross-correlation, and renders a running stack preview in the dashboard.
+
+<ParamField path="stacking.frames" type="integer" default="20">
+  Total number of sub-frames to capture during a live stacking run.
+</ParamField>
+
+<ParamField path="stacking.exposure_s" type="float" default="10.0">
+  Exposure duration in seconds for each individual sub-frame.
+</ParamField>
+
+<ParamField path="stacking.preview_every" type="integer" default="1">
+  Re-render and update the live preview after every N stacked frames. Set to `1` to update after every frame; set higher to reduce rendering overhead during long runs.
+</ParamField>
+
+---
+
+## camera
+
+Default camera parameters pre-filled in the dashboard exposure controls. These can be overridden per-exposure in the UI.
+
+<ParamField path="camera.exposure_duration" type="float" default="1.0">
+  Default single-frame exposure duration in seconds.
+</ParamField>
+
+<ParamField path="camera.binning" type="integer" default="1">
+  Default binning factor. `1` = full resolution; `2` = 2×2 binning.
+</ParamField>
+
+---
+
+## autofocus
+
+Parameters for the autofocus sweep, which steps the focuser through a range of positions, measures stellar FWHM at each stop, and drives to the best focus position.
+
+<ParamField path="autofocus.exposure_s" type="float" default="2.0">
+  Exposure duration per focus sample. Short enough to iterate quickly, long enough to measure stars reliably.
+</ParamField>
+
+<ParamField path="autofocus.step_size" type="integer" default="50">
+  Focuser steps between adjacent sample positions in the sweep.
+</ParamField>
+
+<ParamField path="autofocus.steps_per_side" type="integer" default="5">
+  Number of positions sampled on each side of the starting position. The full sweep visits `2 × steps_per_side + 1` positions.
+</ParamField>
+
+<ParamField path="autofocus.settle_s" type="float" default="1.0">
+  Seconds to wait after each focuser move before taking the measurement exposure, allowing vibrations to damp out.
+</ParamField>
+
+<ParamField path="autofocus.samples_per_point" type="integer" default="1">
+  Number of frames to capture and median-combine at each focus position. Values greater than `1` reduce the effect of atmospheric scintillation on FWHM measurements.
+</ParamField>
+
+<ParamField path="autofocus.min_position" type="integer" default="null">
+  Hard lower limit on focuser travel during the sweep. Set to prevent the focuser from moving below a safe mechanical position. `null` means no limit.
+</ParamField>
+
+<ParamField path="autofocus.max_position" type="integer" default="null">
+  Hard upper limit on focuser travel during the sweep. `null` means no limit.
+</ParamField>
+
+---
+
+## centering
+
+Parameters for the auto-centering (plate-solve goto refinement) routine, which iteratively slews, plate-solves an exposure, and corrects until the target is within the specified tolerance of the frame centre.
+
+<ParamField path="centering.exposure_s" type="float" default="3.0">
+  Exposure duration per plate-solve frame during centering iterations.
+</ParamField>
+
+<ParamField path="centering.tolerance_arcmin" type="float" default="3.0">
+  Success criterion: the routine stops when the angular distance between the solved frame centre and the target is within this many arcminutes.
+</ParamField>
+
+<ParamField path="centering.max_iterations" type="integer" default="4">
+  Maximum number of solve-and-correct iterations before giving up. Prevents infinite loops if the plate solver repeatedly fails or the mount cannot converge.
+</ParamField>
+
+<ParamField path="centering.settle_s" type="float" default="2.0">
+  Seconds to wait after each corrective slew before taking the next plate-solve exposure.
+</ParamField>
+
+---
+
+## cloud
+
+Connects Node v1 to the Boundless Skies cloud coordinator, which schedules variable-star observations across all nodes in the network, aggregates measurements, and batch-submits validated results to AAVSO.
+
+<ParamField path="cloud.enabled" type="boolean" default="false">
+  Set to `true` to start the `CloudCommunicator` daemon on launch. When enabled, the node auto-registers with the cloud on first start and persists its credentials in `data/cloud_state.json`.
+</ParamField>
+
+<ParamField path="cloud.url" type="string" default="">
+  Base URL of the Boundless Skies cloud endpoint. Example: `https://cloud.boundless-skies.org`.
+</ParamField>
+
+<ParamField path="cloud.node_id" type="string" default="">
+  Unique node identifier assigned by the cloud. Leave blank on first start — the node auto-registers and saves its assigned ID to `data/cloud_state.json`.
+</ParamField>
+
+<ParamField path="cloud.api_key" type="string" default="">
+  API key assigned by the cloud during registration. Leave blank on first start — auto-populated after registration.
+</ParamField>
+
+<ParamField path="cloud.heartbeat_interval" type="integer" default="60">
+  Seconds between heartbeat pings sent to the cloud with local conditions (safety status, schedule state, photometry enabled flag).
+</ParamField>
+
+<ParamField path="cloud.plan_poll_interval" type="integer" default="300">
+  Seconds between polls for new observation plans from the cloud scheduler.
+</ParamField>
+
+<ParamField path="cloud.auto_run_plans" type="boolean" default="false">
+  When `true`, observation plans received from the cloud are automatically executed by the schedule runner without any manual confirmation in the dashboard.
+</ParamField>
+
+<ParamField path="cloud.upload_images" type="boolean" default="false">
+  When `true`, raw FITS files are uploaded to the cloud after each successful photometry run, in addition to the measurement data.
+</ParamField>

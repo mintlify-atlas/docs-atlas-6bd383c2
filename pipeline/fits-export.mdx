@@ -1,0 +1,147 @@
+---
+title: "Science-Ready FITS Export with Observatory and Photometry Headers"
+sidebarTitle: "FITS Export"
+description: "How Node v1 exports enriched FITS copies with TELESCOP, INSTRUME, BJD-OBS, AIRMASS, and processing HISTORY headers added from config and photometry results."
+---
+
+After a successful photometry run, Node v1 can write a science-ready copy of the FITS file enriched with observatory, detector, and processing metadata. The export preserves the original Seestar file untouched — a byte-for-byte copy is made first with `shutil.copy2`, and all additional keywords are written only into the copy. This gives downstream users and archives a self-describing file that carries its own provenance without any risk of corrupting the source data.
+
+## Configuration
+
+FITS export is controlled by two keys nested under `photometry.fits_export` in `config.yaml`:
+
+```yaml config.yaml
+photometry:
+  fits_export:
+    enabled: true
+    export_dir: "fits_export"   # directory to write enriched copies into
+```
+
+When `enabled: true`, `export_enhanced_fits()` is called automatically after every successful pipeline run. The `export_dir` path is relative to the working directory. An optional `export_dir` argument to the function itself overrides the config value (useful for tests or scripted batch processing).
+
+Exported files are written to `<export_dir>/YYYY-MM-DD/<original_basename>`, where the date is derived from the result's `bjd` field (converted to UTC via `astropy.time.Time`) or from `DATE-OBS` in the source FITS header, falling back to today's date if neither is available.
+
+## Headers Added
+
+The following FITS header keywords are set on the exported copy. All keywords pass through `_set_if_absent()`, which means **they are only written if the keyword does not already exist in the source file**. Existing Seestar headers are never overwritten.
+
+<Note>
+  `_set_if_absent()` is defined as a single conditional check: `if keyword not in hdr: hdr[keyword] = value`. Original Seestar metadata — including its own `TELESCOP`, `INSTRUME`, or `AIRMASS` — is always preserved exactly as the camera wrote it.
+</Note>
+
+### Observatory Block
+
+<ResponseField name="TELESCOP" type="string">
+  Telescope name, from `observatory.telescope` in config. Default: `ZWO Seestar S50`.
+</ResponseField>
+
+<ResponseField name="INSTRUME" type="string">
+  Instrument/detector name, from `observatory.instrument` in config. Default: `ZWO Seestar S50 IMX462`.
+</ResponseField>
+
+<ResponseField name="OBSERVER" type="string">
+  Observer name or code, from `observatory.observer` in config. Falls back to `aavso.observer_code` if `observatory.observer` is not set. Omitted if neither is configured.
+</ResponseField>
+
+<ResponseField name="SITENAME" type="string">
+  Human-readable site name, from `observatory.name` in config. Omitted if not configured.
+</ResponseField>
+
+<ResponseField name="SITELAT / OBSLAT" type="float">
+  Observer latitude in decimal degrees (north positive), from `observatory.latitude` or `safety.observer.latitude`. Both keywords are set to the same value for maximum compatibility with analysis tools.
+</ResponseField>
+
+<ResponseField name="SITELONG / OBSLONG" type="float">
+  Observer longitude in decimal degrees (east positive, negative for west), from `observatory.longitude` or `safety.observer.longitude`. Both keywords are set to the same value.
+</ResponseField>
+
+<ResponseField name="SITEELEV" type="float">
+  Observer altitude above sea level in metres, from `observatory.elevation` in config. Default: `0.0`.
+</ResponseField>
+
+### Detector Block
+
+<ResponseField name="GAIN" type="float">
+  Detector gain in e⁻/ADU, from `photometry.gain` in config. Default: `1.0`.
+</ResponseField>
+
+<ResponseField name="RDNOISE" type="float">
+  Read noise in ADU, from `photometry.read_noise` in config. Default: `5.0`.
+</ResponseField>
+
+<ResponseField name="IMAGETYP" type="string">
+  Always set to `LIGHT`. The pipeline only processes light frames; calibration frames are rejected in Step 1.
+</ResponseField>
+
+<ResponseField name="RADESYS" type="string">
+  Always set to `ICRS`. The coordinate reference system used by the WCS solution and all sky coordinates in the file.
+</ResponseField>
+
+<ResponseField name="EQUINOX" type="float">
+  Always set to `2000.0`.
+</ResponseField>
+
+### Science Block
+
+<ResponseField name="AIRMASS" type="float">
+  Airmass at time of observation, copied from the photometry result dict. Only set if the result contains a non-null `airmass` value.
+</ResponseField>
+
+<ResponseField name="BJD-OBS" type="float">
+  Barycentric Julian Date (TCB) of the observation midpoint, copied from the photometry result dict. Only set if the result contains a non-null `bjd` value. Comment: `Barycentric Julian Date (TCB)`.
+</ResponseField>
+
+<ResponseField name="BARY-SYS" type="string">
+  Always set to `TCB` when `BJD-OBS` is written, identifying the time scale of the barycentric correction.
+</ResponseField>
+
+### Processing Block
+
+<ResponseField name="SWCREATE" type="string">
+  Software identification string: `Boundless Skies Node <node_id>`. The `node_id` is taken from `photometry.node_id` in config.
+</ResponseField>
+
+<ResponseField name="DATE-BLD" type="string">
+  UTC timestamp of when the header enrichment was applied, in ISO 8601 format (`YYYY-MM-DDTHH:MM:SSZ`). Comment: `UTC timestamp of header enrichment`.
+</ResponseField>
+
+<ResponseField name="HISTORY" type="string (multiple)">
+  Multiple `HISTORY` lines are always appended (never overwritten, since `HISTORY` is an additive FITS keyword):
+
+  - `Processed by Boundless Skies Node v1 (<node_id>)`
+  - `Differential photometry: mag=<mag>+/-<err> snr=<snr> quality=<flag>` (if photometry succeeded)
+  - `BJD-OBS computed via astropy barycentric correction (TCB)` (if BJD is present)
+  - `Comparison stars used: <n>` (if comparison star count is present)
+  - `Zero point: <zp>+/-<zp_scatter> mag` (if zero point is present)
+  - `Astrometric solution: WCS present (Seestar or ASTAP)` (if `CD1_1` or `CDELT1` is in the header)
+</ResponseField>
+
+## Public API
+
+```python fits_export.py
+from fits_export import export_enhanced_fits
+
+path = export_enhanced_fits(source_fits, result, config)
+if path:
+    print(f"Exported: {path}")
+```
+
+`export_enhanced_fits()` returns the full path to the enriched copy on success, or `None` if the copy could not be written or the header enrichment raised an exception. All failures are logged at `ERROR` level.
+
+## Function Signature
+
+<ParamField path="source_fits" type="str" required>
+  Absolute or relative path to the source FITS file to be copied and enriched. The file must be readable by `astropy.io.fits`. The source file is never modified.
+</ParamField>
+
+<ParamField path="result" type="dict" required>
+  The measurement dict returned by `run_pipeline()`. Science keywords (`AIRMASS`, `BJD-OBS`) and all `HISTORY` lines are derived from this dict. Pass an empty dict to export with observatory/detector headers only.
+</ParamField>
+
+<ParamField path="config" type="dict" required>
+  The full application config dict (loaded from `config.yaml`). Observatory, detector, and processing keyword values are all drawn from `config["observatory"]` and `config["photometry"]`.
+</ParamField>
+
+<ParamField path="export_dir" type="str">
+  Optional override for the export root directory. When provided, this value takes precedence over `config["photometry"]["fits_export"]["export_dir"]`. The date sub-directory (`YYYY-MM-DD`) is still appended automatically.
+</ParamField>

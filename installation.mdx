@@ -1,0 +1,171 @@
+---
+title: "Install Boundless Skies Node v1 on macOS, Linux, or Windows"
+sidebarTitle: "Installation"
+description: "Step-by-step guide to installing Node v1: Python 3.10+, virtual environment, pip dependencies, and optional ASTAP plate solver."
+---
+
+Node v1 is a pure-Python 3.10+ application with no platform-specific code. It has been tested on macOS and runs equally well on Linux and Windows. Installation takes around five minutes: clone the repository, create a virtual environment, install dependencies from `requirements.txt`, and edit `config.yaml` for your site. There is nothing to compile and no system-level packages to install beyond Python itself.
+
+## Prerequisites
+
+Before installing, make sure you have the following:
+
+- **Python 3.10 or later** — check with `python3 --version`
+- **ZWO Seestar S50** (or any ALPACA-compatible telescope) connected to the same LAN as your computer — the node communicates with it over HTTP, so no USB cables are required
+- **ASTAP plate solver** *(optional)* — only needed if your FITS files lack WCS (World Coordinate System) headers; the Seestar S50 typically solves onboard, so most users can skip this initially
+- **macOS, Linux, or Windows** — no platform-specific code paths exist in Node v1
+
+<Note>
+  The Seestar ALPACA server must be reachable via UDP broadcast on port `32227` (for discovery) and HTTP on the device's IP address (default port `32323`). Some routers block UDP broadcast between subnets — if **Discover** times out, confirm the node computer and the Seestar are on the same subnet.
+</Note>
+
+## Install
+
+<Steps>
+  <Step title="Clone or download the repository">
+    If you have Git installed, clone the repo into a local directory:
+
+    ```bash
+    git clone https://github.com/skyrobot804/node_v1.git
+    cd node_v1
+    ```
+
+    If you don't use Git, download and extract the ZIP from the repository page, then open a terminal in the extracted folder.
+  </Step>
+
+  <Step title="Create a virtual environment">
+    A virtual environment keeps Node v1's dependencies isolated from the rest of your Python installation:
+
+    ```bash
+    python3 -m venv venv
+    ```
+  </Step>
+
+  <Step title="Activate the virtual environment">
+    <Tabs>
+      <Tab title="macOS / Linux">
+        ```bash
+        source venv/bin/activate
+        ```
+
+        Your prompt will change to show `(venv)` when the environment is active.
+      </Tab>
+      <Tab title="Windows">
+        ```bat
+        venv\Scripts\activate
+        ```
+
+        Your prompt will show `(venv)` when active. If you get an execution policy error, run `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` first in PowerShell.
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Install dependencies">
+    With the virtual environment active, install all required packages:
+
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+    This installs eleven packages. See the [Dependencies](#dependencies) section below for a full list with descriptions.
+  </Step>
+
+  <Step title="Copy and edit config.yaml">
+    `config.yaml` ships with safe defaults — everything disabled except the SafetyManager. Before running a live session, edit at minimum:
+
+    ```yaml
+    observatory:
+      latitude: null          # ← your site latitude in decimal degrees N
+      longitude: null         # ← your site longitude in decimal degrees E
+
+    photometry:
+      node_id: "node_001"     # ← set a unique ID for your node
+
+    aavso:
+      observer_code: ""       # ← your AAVSO OBSCODE
+      username: ""            # ← your AAVSO login
+      password: ""
+
+    image_watcher:
+      watch_path: /mnt/seestar  # ← SMB share path where Seestar writes FITS files
+    ```
+
+    For a first-time dry run you can leave everything at defaults — see the [Quickstart](/quickstart) for the minimal config.
+  </Step>
+</Steps>
+
+## Dependencies
+
+All dependencies are declared in `requirements.txt` and installed automatically by `pip install -r requirements.txt`. The table below explains the role of each package inside Node v1:
+
+| Package | Version | Role in Node v1 |
+|---------|---------|-----------------|
+| `requests` | ≥ 2.31.0 | HTTP client used by the ALPACA layer to talk to the telescope, camera, focuser, and filter wheel; also used by the AAVSO WebObs submission client |
+| `pyyaml` | ≥ 6.0 | Loads and saves `config.yaml`; powers the live config editor in the dashboard |
+| `flask` | ≥ 3.0 | The web framework behind the dashboard — serves the control panel on port `5173` and streams Server-Sent Events for the live log panel |
+| `numpy` | ≥ 1.24 | Array operations throughout the photometry pipeline — pixel data, background estimation, aperture sums, and uncertainty propagation |
+| `Pillow` | ≥ 10.0 | FITS-to-JPEG thumbnail generation for the observation history gallery; also used by the pier-cam stream |
+| `watchdog` | ≥ 4.0 | Cross-platform filesystem events (FSEvents on macOS, inotify on Linux, kqueue on BSD/Windows) for `ImageWatcher` |
+| `astropy` | ≥ 6.0 | FITS I/O, WCS transformations, Barycentric Julian Date (BJD_TCB) calculation, airmass from Alt/Az, and coordinate handling throughout the pipeline |
+| `photutils` | ≥ 1.9 | `DAOStarFinder` for source detection and FWHM estimation; `CircularAperture` and sigma-clipped annulus background for aperture photometry |
+| `astroquery` | ≥ 0.4.6 | Queries the AAVSO VSP API for comparison stars; falls back to the Gaia DR3 catalogue when VSP coverage is absent |
+| `zwoasi` | ≥ 0.0.22 | SDK wrapper for ZWO ASI cameras — used by the optional pier-cam (guide camera) live video stream |
+| `pyongc` | ≥ 1.2 | Messier and NGC object catalogue powering the `/api/catalog` endpoint and the scheduling modal's object browser |
+
+## ASTAP Plate Solver (Optional)
+
+ASTAP is an offline plate-solver that reads a FITS file and writes WCS (World Coordinate System) keywords back into the header. Node v1's photometry pipeline calls it only when a FITS file arrives **without** an existing WCS solution.
+
+**When you need it:** The Seestar S50 normally solves its own images onboard, so ASTAP is rarely required. You will need it if:
+- You are feeding Node v1 FITS files from a different camera that does not plate-solve
+- The Seestar's onboard solver fails on a particular field
+
+**How to install:**
+
+1. Download ASTAP from [hnsky.org/astap.htm](https://www.hnsky.org/astap.htm) and install it for your platform.
+2. Download at least one star catalogue — the **D50** (down to mag 15) or **H18** (down to mag 18) catalogue covers most Seestar targets.
+3. Either place the `astap` binary in your `PATH`, or set the full path in `config.yaml`:
+
+```yaml
+photometry:
+  astap_path: "astap"          # if astap is in PATH
+  # astap_path: "/usr/local/bin/astap"   # or a full path
+  astap_search_radius: 10      # degrees — increase for wide-field images
+```
+
+<Tip>
+  If plate-solving fails repeatedly, check the troubleshooting section in the README: the most common causes are ASTAP not found in `PATH`, the star catalogue not installed, or `astap_search_radius` being too small for a wide-field frame.
+</Tip>
+
+## Running Node v1
+
+There are two ways to start Node v1. In both cases, the dashboard will be available at [http://localhost:5173](http://localhost:5173) once the server starts.
+
+**Recommended — `main.py` (with watchdog):**
+
+```bash
+python main.py
+```
+
+`main.py` wraps `dashboard.py` in a watchdog loop. If `dashboard.py` exits with a non-zero code it is restarted automatically after a 2-second delay. If `dashboard.py` itself changes on disk the watchdog detects the new modification time and restarts immediately — useful during development.
+
+**Single run — `dashboard.py` (no auto-restart):**
+
+```bash
+python dashboard.py
+```
+
+Runs the Flask server once with no supervisor. If the process crashes it stays down. Use this when you want a clean, single-process run for debugging or when running under an external process manager such as `systemd` or `launchd`.
+
+After either command, open [http://localhost:5173](http://localhost:5173) in a browser. The dashboard opens automatically in some environments.
+
+<Note>
+  The repository ships a convenience script `run.sh` that activates the virtual environment and forwards all arguments to `python3`. You can use it as:
+
+  ```bash
+  ./run.sh main.py
+  # equivalent to: source venv/bin/activate && python3 main.py
+  ```
+
+  This is handy if you switch between virtual environments frequently, or when launching from a cron job or shell alias.
+</Note>

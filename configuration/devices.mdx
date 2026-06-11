@@ -1,0 +1,130 @@
+---
+title: "ALPACA Device Configuration for Telescope, Camera, and Focuser"
+sidebarTitle: "Devices"
+description: "Configure the ALPACA devices section: enable or disable telescope, camera, focuser, filter wheel, and cover calibrator with device numbers."
+---
+
+The `devices:` section of `config.yaml` controls which ALPACA devices Node v1 attempts to connect to when you click **Connect** in the dashboard. Each entry under `devices:` maps to a physical piece of equipment on your ALPACA server. Setting `enabled: true` tells the dashboard to attempt a connection; `enabled: false` skips the device entirely without logging errors. The `device_number` is the zero-based index of the device on the server — for a single Seestar S50, every device number is `0`.
+
+## Device Keys
+
+Each device block follows the same two-key pattern: `enabled` and `device_number`.
+
+### telescope
+
+<ParamField path="devices.telescope.enabled" type="boolean" default="true">
+  Enables the ALPACA telescope (mount) connection. Required for slewing, tracking, parking, nudging, and the auto-centering routine. Disable only if you are using Node v1 purely as a camera controller.
+</ParamField>
+
+<ParamField path="devices.telescope.device_number" type="integer" default="0">
+  ALPACA device index for the telescope on the server. Almost always `0` unless multiple mounts are connected to the same ALPACA server.
+</ParamField>
+
+### camera
+
+<ParamField path="devices.camera.enabled" type="boolean" default="true">
+  Enables the ALPACA camera connection. Required for manual exposures, the schedule runner, autofocus, horizon scan, and any feature that takes images. Disable only for mount-only testing.
+</ParamField>
+
+<ParamField path="devices.camera.device_number" type="integer" default="0">
+  ALPACA device index for the camera on the server. Almost always `0`.
+</ParamField>
+
+### focuser
+
+<ParamField path="devices.focuser.enabled" type="boolean" default="false">
+  Enables the ALPACA focuser connection. Only enable this if a physical motorised focuser is attached and configured in your ALPACA server. When disabled, the autofocus routine is unavailable and the dashboard will return an error if you attempt to start it.
+</ParamField>
+
+<ParamField path="devices.focuser.device_number" type="integer" default="0">
+  ALPACA device index for the focuser on the server.
+</ParamField>
+
+### filterwheel
+
+<ParamField path="devices.filterwheel.enabled" type="boolean" default="false">
+  Enables the ALPACA filter wheel connection. Filter wheel support is not yet surfaced in the dashboard UI, but enabling the connection here makes the device available for future use and custom scripts.
+</ParamField>
+
+<ParamField path="devices.filterwheel.device_number" type="integer" default="0">
+  ALPACA device index for the filter wheel on the server.
+</ParamField>
+
+### covercalibrator
+
+<ParamField path="devices.covercalibrator.enabled" type="boolean" default="true">
+  Enables the ALPACA CoverCalibrator connection, which drives the Seestar S50 arm open and closed from the dashboard. When connected successfully, **Open Arm** and **Close Arm** buttons appear in the telescope panel.
+</ParamField>
+
+<ParamField path="devices.covercalibrator.device_number" type="integer" default="0">
+  ALPACA device index for the cover calibrator on the server.
+</ParamField>
+
+## Example devices: Block
+
+The following is the complete default `devices:` section from `config.yaml`:
+
+```yaml config.yaml
+devices:
+  telescope:
+    enabled: true
+    device_number: 0
+  camera:
+    enabled: true
+    device_number: 0
+  focuser:
+    enabled: false
+    device_number: 0
+  filterwheel:
+    enabled: false
+    device_number: 0
+  covercalibrator:
+    enabled: true
+    device_number: 0
+```
+
+<Note>
+If a CoverCalibrator device is not present on your ALPACA server, connecting with `covercalibrator.enabled: true` will log a warning such as `CoverCalibrator connect failed: 400 Client Error`. This is non-fatal — the rest of the dashboard continues to function normally. If you want to suppress the warning, set `covercalibrator.enabled: false`.
+</Note>
+
+<Note>
+`focuser.enabled` is `false` by default because most Seestar S50 setups do not have a separately addressable focuser. The Seestar manages focus internally. Only set `focuser.enabled: true` if you have attached an external motorised focuser and registered it in your ALPACA server configuration.
+</Note>
+
+---
+
+## ALPACA Discovery
+
+Before you can connect to any device, Node v1 must locate your ALPACA server on the local network. The `alpaca:` section configures that discovery process.
+
+<ParamField path="alpaca.discovery_port" type="integer" default="32227">
+  UDP broadcast port used for ALPACA server discovery. The ALPACA specification defines port `32227`. Only change this if your server is configured to listen on a different port.
+</ParamField>
+
+<ParamField path="alpaca.discovery_timeout" type="integer" default="5">
+  Seconds the discovery scan waits for servers to respond. Increase this value on slow or heavily loaded networks. A value of `5` is sufficient for a direct wired or 5 GHz Wi-Fi connection.
+</ParamField>
+
+<ParamField path="alpaca.default_server.address" type="string" default="172.22.6.32">
+  IP address of the server to auto-connect to when found during a scan. Set by ticking **Set as default** in the connect dialog. Clear this field to disable auto-connect and always show the server selection list.
+</ParamField>
+
+<ParamField path="alpaca.default_server.port" type="integer" default="32323">
+  HTTP port of the default ALPACA server. For the Seestar S50, this is typically `32323`. Used together with `default_server.address` for auto-connect.
+</ParamField>
+
+### How Discovery Works
+
+When you click **Discover** in the dashboard, Node v1 sends a UDP broadcast packet to port `alpaca.discovery_port` and waits up to `alpaca.discovery_timeout` seconds for responses. Any ALPACA server on the same subnet that is listening will reply with its address and port. The dashboard then presents the list of found servers and lets you select one to connect to.
+
+If `alpaca.default_server` is set and the saved address/port appears in the discovery results, the dashboard skips the selection dialog and connects automatically. This is the typical production setup: discover once, set as default, and subsequent starts connect in a single click.
+
+```yaml config.yaml
+alpaca:
+  discovery_port: 32227
+  discovery_timeout: 5
+  api_version: 1
+  default_server:
+    address: 172.22.6.32
+    port: 32323
+```

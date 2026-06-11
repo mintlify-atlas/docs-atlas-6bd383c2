@@ -1,0 +1,184 @@
+---
+title: "Telescope Discovery, Connection, and Mount Controls"
+sidebarTitle: "Telescope Controls"
+description: "Discover and connect ALPACA telescopes, control park and tracking, slew to coordinates, use the joystick for fine nudges, and run horizon scans."
+---
+
+All telescope control operations in the Node v1 dashboard flow through the ALPACA client layer. The dashboard speaks to any ALPACA-compatible mount driver over UDP (for discovery) and HTTP (for all subsequent commands), so it works with Seestar, ASIAIR, and any other device that exposes the ASCOM Remote / ALPACA API. No driver installation is required on the node itself.
+
+## Discovering and Connecting
+
+Before any mount commands are available, the dashboard must discover and connect to an ALPACA server on your local network.
+
+<Steps>
+  <Step title="Trigger discovery">
+    Click the **Discover** button in the Connection panel. The dashboard sends `POST /api/discover`, which broadcasts a UDP packet on the ALPACA discovery port. All ALPACA servers that respond are listed in the server dropdown.
+  </Step>
+  <Step title="Select a server">
+    Choose the correct server from the dropdown. The entry shows the server's IP address and port number as reported during discovery.
+  </Step>
+  <Step title="Connect">
+    Click **Connect**. The dashboard sends `POST /api/connect` with the selected server's address and port:
+
+    ```json
+    POST /api/connect
+    {
+      "address": "172.22.6.32",
+      "port": 32323
+    }
+    ```
+
+    On success, the status indicator turns green and all mount-control buttons become active. The full device state is available at `GET /api/status`.
+  </Step>
+  <Step title="Disconnect when finished">
+    Click **Disconnect** to send `POST /api/disconnect`, which cleanly releases all ALPACA device handles.
+  </Step>
+</Steps>
+
+<Note>
+  If the node and the mount controller are on different subnets, UDP broadcast discovery may not reach the server. In that case, type the IP address and port directly into the manual address fields before clicking **Connect**.
+</Note>
+
+## Park / Unpark
+
+Parking and unparking commands move the mount to or from its designated park position and enable or disable axis movement respectively.
+
+| Action | Endpoint |
+|--------|----------|
+| Park the mount | `POST /api/telescope/park` |
+| Unpark the mount | `POST /api/telescope/unpark` |
+
+Both endpoints accept an empty JSON body `{}` and return a status response.
+
+<Warning>
+  **Seestar users:** the Seestar S50/S30 has a hardware-level park interlock. You must first unpark the scope inside the **Seestar mobile app** before `POST /api/telescope/unpark` will allow movement. Sending the unpark command from the dashboard while the hardware interlock is active will return an ALPACA error; the scope will not move.
+</Warning>
+
+## Tracking
+
+Sidereal tracking can be toggled independently of slewing. The dashboard's **Tracking** toggle calls:
+
+```json
+POST /api/telescope/tracking
+{
+  "enabled": true
+}
+```
+
+Set `"enabled": false` to stop the drive motors without parking.
+
+The tracking rate is controlled by the `telescope.tracking_rate` config key. A value of `0` selects sidereal rate (the correct setting for most targets). Other standard ALPACA rates—lunar, solar, king—can be set by changing the config value and reconnecting.
+
+<Note>
+  Tracking is automatically re-enabled by the schedule runner before each slew. You do not need to toggle it manually between scheduled targets.
+</Note>
+
+## Slewing to Coordinates
+
+The **Slew** form accepts a target position in equatorial coordinates and sends:
+
+```json
+POST /api/telescope/slew
+{
+  "ra": 5.588,
+  "dec": -5.391
+}
+```
+
+<ParamField body="ra" type="float" required>
+  Right ascension of the target in **decimal hours** (0 – 24). For example, the Orion Nebula (M42) is at RA 5h 35m 17s ≈ `5.588` hours. Do **not** supply degrees here.
+</ParamField>
+
+<ParamField body="dec" type="float" required>
+  Declination of the target in **decimal degrees** (−90 to +90). Negative values are south of the celestial equator.
+</ParamField>
+
+<Warning>
+  RA must be supplied in **decimal hours**, not decimal degrees. A common mistake is to enter 83.8° (M42 in degrees) instead of 5.588 h. The mount will slew to the wrong position without returning an error if you mix up the units.
+</Warning>
+
+<Tip>
+  The catalog browser (see [Scheduling](/dashboard/scheduling)) auto-fills the slew form with the correct RA/Dec values when you select an object, eliminating manual unit conversion.
+</Tip>
+
+## Joystick / Nudge
+
+The on-screen joystick provides directional nudges for fine centering after a slew. Clicking any of the **N / S / E / W** arrow buttons sends:
+
+```json
+POST /api/telescope/nudge
+{
+  "direction": "N",
+  "arcseconds": 30
+}
+```
+
+<ParamField body="direction" type="string" required>
+  Cardinal direction: `"N"`, `"S"`, `"E"`, or `"W"`.
+</ParamField>
+
+<ParamField body="arcseconds" type="float" required>
+  Angular distance to nudge, in arcseconds. The dashboard exposes two preset step sizes—**Fine** (small arcsecond value for precise centering) and **Coarse** (larger value for repositioning after a rough slew)—selectable with the step-size toggle above the joystick.
+</ParamField>
+
+<Note>
+  Nudge moves are non-tracking; the mount moves by the requested angle and then resumes tracking. For large repositioning, use the Slew form instead.
+</Note>
+
+## Autofocus
+
+The autofocus module drives the focuser through a configurable range of positions, measures star FWHM at each point, and fits a parabola to find the best focus position. Start and stop it with:
+
+| Action | Endpoint |
+|--------|----------|
+| Start autofocus | `POST /api/focus/start` |
+| Stop autofocus | `POST /api/focus/stop` |
+
+Both endpoints accept an empty body `{}`. Progress is reported in the live log stream.
+
+The autofocus sequence is controlled by the following `config.yaml` keys:
+
+| Config key | Type | Description |
+|---|---|---|
+| `autofocus.exposure_s` | float | Exposure duration (seconds) for each focus frame |
+| `autofocus.step_size` | int | Focuser step increment between sample positions |
+| `autofocus.steps_per_side` | int | Number of steps to take on each side of the starting position |
+| `autofocus.settle_s` | float | Seconds to wait after each focuser move before capturing |
+| `autofocus.samples_per_point` | int | Number of frames to average at each focus position |
+| `autofocus.min_position` | int | Lower bound of the allowed focuser range |
+| `autofocus.max_position` | int | Upper bound of the allowed focuser range |
+
+<Tip>
+  Run autofocus at the beginning of the night and again after a significant temperature drop (typically >5 °C). The `autofocus.settle_s` value may need to be increased on slow focusers to avoid measuring during a vibration-induced blur.
+</Tip>
+
+## Auto-Centering
+
+Auto-centering plate-solves the current field, calculates the offset from the requested target coordinates, and commands a correction slew. It repeats this loop until the target is within the configured tolerance or the iteration limit is reached.
+
+| Action | Endpoint |
+|--------|----------|
+| Start auto-centering | `POST /api/center/start` |
+
+The centering loop reads these `config.yaml` keys:
+
+| Config key | Type | Description |
+|---|---|---|
+| `centering.exposure_s` | float | Exposure duration for each plate-solve frame |
+| `centering.tolerance_arcmin` | float | Acceptable distance from target center (arcminutes) |
+| `centering.max_iterations` | int | Maximum number of solve-and-slew cycles before giving up |
+| `centering.settle_s` | float | Seconds to wait after each correction slew before solving |
+
+<Note>
+  Auto-centering requires a working plate-solve installation (e.g., Astrometry.net local solver or the Seestar's built-in solver). If the solver fails to return a result within the timeout, the centering run aborts and logs an error.
+</Note>
+
+## Horizon Scan
+
+The Horizon Scan feature sweeps a grid of sky positions and checks each one against the node's horizon obstruction model. The resulting map shows which azimuth/altitude zones are blocked by trees, rooflines, or other obstructions at your site. This data feeds directly into the Safety Manager, which uses it to flag or halt observations when a target is tracking into an obstruction zone.
+
+To run a horizon scan, click **Start Horizon Scan** in the Telescope Controls panel. The mount slews to a series of positions in altitude-azimuth space; the safety layer records which positions produce valid frames versus obstruction-masked images. The scan completes automatically and updates the stored horizon model.
+
+<Warning>
+  The horizon scan moves the mount across a wide range of positions. Ensure the telescope is unparked, tracking is on, and the observing area is clear of obstructions before starting the scan. Do not leave the scope unattended during a horizon scan.
+</Warning>

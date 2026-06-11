@@ -1,0 +1,328 @@
+---
+title: "Differential Photometry Pipeline: From FITS to Calibrated Magnitude"
+sidebarTitle: "Photometry"
+description: "How Node v1 runs the 8-step differential photometry pipeline: WCS plate-solve, FWHM estimation, comp star queries, aperture photometry, and quality gating."
+---
+
+Node v1 runs a full automated differential photometry pipeline on each incoming FITS file, producing a calibrated magnitude ready for AAVSO submission. When `photometry.enabled: true` is set in `config.yaml`, the pipeline fires automatically every time the `ImageWatcher` detects a new FITS file on the Seestar SMB share. It returns a measurement dict on success, or `None` on any unrecoverable failure, so the rest of the system can continue processing subsequent frames.
+
+## Pipeline Overview
+
+The pipeline processes each FITS image through eight sequential steps:
+
+```
+FITS file
+  → 1. Ensure WCS         (check header; run ASTAP plate solve if absent)
+  → 2. Locate target      (world_to_pixel; reject if too close to edge)
+  → 3. Estimate FWHM      (DAOStarFinder + second-moment Gaussian stamps)
+  → 4. Comparison stars   (AAVSO VSP API → Gaia DR3 fallback; merge, deduplicate)
+  → 5. Aperture photometry (CircularAperture + sigma-clipped annulus background)
+  → 6. Differential photometry (weighted zero-point ensemble; Poisson + ZP scatter)
+  → 7. Ancillary data     (BJD_TCB via astropy, airmass from Alt/Az or header)
+  → 8. Quality flag       (good / acceptable / poor based on SNR, uncertainty, comp stars)
+  → result dict
+```
+
+Each step is independently logged, and failures in any step short-circuit the pipeline with a `None` return rather than a corrupt measurement reaching AAVSO.
+
+## Step 1: WCS Plate Solving
+
+The pipeline cannot measure sky coordinates without a World Coordinate System (WCS) embedded in the FITS header. The Seestar S50 performs onboard plate-solving for every exposure it saves, so CRVAL1/CRVAL2 and the CD matrix are almost always already present. When they are, the plate solver is skipped entirely:
+
+```python photometry.py
+def _ensure_wcs(fits_path, ra_deg, dec_deg, astap_path, search_radius):
+    try:
+        with fits.open(fits_path, memmap=False, ignore_missing_simple=True) as hdul:
+            hdr = hdul[0].header
+            if "CRVAL1" in hdr and "CRVAL2" in hdr and "CD1_1" in hdr:
+                logger.info("WCS already in FITS header — skipping plate solve")
+                return True
+            # Also accept CDELT-style WCS
+            if "CRVAL1" in hdr and "CRVAL2" in hdr and "CDELT1" in hdr:
+                logger.info("WCS (CDELT) already in FITS header — skipping plate solve")
+                return True
+    except Exception as exc:
+        logger.warning("Could not inspect FITS header: %s", exc)
+
+    logger.info("No WCS found — running ASTAP plate solver")
+    return _run_astap(fits_path, ra_deg, dec_deg, astap_path, search_radius)
+```
+
+If neither `CD1_1` nor `CDELT1` is found alongside `CRVAL1`/`CRVAL2`, ASTAP is invoked. ASTAP receives the hint coordinates from the FITS header (or config override) and writes the WCS solution back into the file in-place with `-update`:
+
+```python photometry.py
+def _run_astap(fits_path, ra_deg, dec_deg, astap_path, search_radius):
+    # ASTAP takes RA in decimal hours, SPD (South Polar Distance) in degrees
+    ra_hours = ra_deg / 15.0
+    spd      = 90.0 + dec_deg   # SPD = 90 + dec
+
+    cmd = [
+        astap_path,
+        "-f",   fits_path,
+        "-ra",  f"{ra_hours:.6f}",
+        "-spd", f"{spd:.4f}",
+        "-r",   str(int(search_radius)),
+        "-update",              # write WCS into FITS header in-place
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+```
+
+ASTAP times out after 90 seconds. If it is not found at the configured path, the error log includes a download URL. Set `photometry.astap_path` in `config.yaml` to the full binary path if ASTAP is not in your system `PATH`. Plate solving fails silently when the star catalog is not installed alongside ASTAP — see the [ASTAP site](https://www.hnsky.org/astap.htm) for catalog downloads.
+
+## Step 3: FWHM Estimation
+
+Accurate aperture photometry requires knowing the stellar point-spread function width. `_estimate_fwhm` uses `DAOStarFinder` to detect bright stars across the entire image, then fits a second-moment Gaussian to 21×21 pixel stamps around a mid-brightness subset (skipping the top 10% to avoid saturated stars and the bottom 50% to avoid noise):
+
+```python photometry.py
+daofind = DAOStarFinder(fwhm=5.0, threshold=7.0 * std, exclude_border=True)
+sources = daofind(data - median)
+
+# Second-moment FWHM along each axis
+sx2 = float(np.dot((xi - xm) ** 2, col_s) / col_s.sum())
+sy2 = float(np.dot((yi - ym) ** 2, row_s) / row_s.sum())
+fwhm = 2.355 * math.sqrt(max((sx2 + sy2) / 2.0, 0.5))
+```
+
+The median of all valid stamp FWHMs (filtered to the range 1.5–25 px) is returned. If `DAOStarFinder` finds no sources or if an exception occurs at any point, the function falls back to **4.0 px**, which is typical for the Seestar S50 at f/5 under good seeing.
+
+The FWHM drives the aperture geometry used in Step 5:
+
+```python photometry.py
+ap_factor   = float(phot_cfg.get("aperture_factor",  2.5))
+ann_inner_f = float(phot_cfg.get("annulus_inner",    4.0))
+ann_outer_f = float(phot_cfg.get("annulus_outer",    6.0))
+ap_r    = max(3.0, fwhm_px * ap_factor)
+ann_in  = max(ap_r + 1.0, fwhm_px * ann_inner_f)
+ann_out = max(ann_in + 3.0, fwhm_px * ann_outer_f)
+```
+
+All three multipliers are configurable so you can tune them for different instruments or observing conditions without changing code.
+
+## Step 4: Comparison Stars
+
+The pipeline first queries the AAVSO Variable Star Plotter (VSP) API for catalogue-quality comparison stars. The API call passes the target name, its RA/Dec, the field of view in arcminutes, and the magnitude limit:
+
+```python photometry.py
+fov_arcmin = int(field_radius_deg * 2 * 60)
+params = {
+    "star":     target_name,
+    "ra":       ra_deg,
+    "dec":      dec_deg,
+    "fov":      fov_arcmin,
+    "maglimit": mag_limit,
+    "format":   "json",
+}
+url = "https://www.aavso.org/apps/vsp/api/chart/"
+resp = requests.get(url, params=params, timeout=15)
+```
+
+For each star returned, the pipeline prefers the V-band magnitude, then falls back to B, then R. If AAVSO VSP returns fewer than three stars — common for targets outside VSX coverage — the pipeline immediately falls back to a **Gaia DR3** cone search via `astroquery`:
+
+```python photometry.py
+Gaia.MAIN_GAIA_TABLE = "gaiadr3.gaia_source"
+Gaia.ROW_LIMIT = n_max * 3  # oversample; we'll filter
+j = Gaia.cone_search_async(coord, radius)
+results = j.get_results()
+```
+
+Gaia returns G-band magnitudes, which are converted to approximate V magnitudes using the Evans et al. 2018 (A&A 616, A4) polynomial:
+
+```python photometry.py
+# Evans et al. 2018 (A&A 616, A4) G→V transformation using BP-RP color.
+# V = G - (c0 + c1*(BP-RP) + c2*(BP-RP)^2)
+# Valid range: -0.5 < BP-RP < 2.75
+if -0.5 <= bp_rp <= 2.75:
+    v_mag   = g_mag - (-0.01760 - 0.006860 * bp_rp - 0.1732 * bp_rp ** 2)
+    mag_err = 0.05   # residual scatter on the Evans relation (~0.03–0.05 mag)
+else:
+    # Out of calibration range — use G as-is with larger uncertainty
+    v_mag   = g_mag
+    mag_err = 0.20
+```
+
+After both queries, the lists are merged. Deduplication checks each Gaia star against existing AAVSO coordinates: any star within 5 arcsec (corrected for cos(Dec)) is considered a duplicate and dropped. AAVSO catalogue entries are always preferred.
+
+## Step 6: Differential Photometry
+
+The pipeline computes a weighted zero-point ensemble rather than relying on a single comparison star. For each comparison star with a positive flux and a known catalogue magnitude:
+
+```python photometry.py
+def instr_mag(flux: float) -> float:
+    return -2.5 * math.log10(max(flux, 1e-10))
+
+target_instr = instr_mag(target_flux)
+zero_points, zp_weights = [], []
+
+for i, cs in enumerate(comp_in_field):
+    if comp_fluxes[i] <= 0:
+        continue
+    ref_mag = cs.get("mag_v")
+    if ref_mag is None:
+        continue
+    zp = ref_mag - instr_mag(comp_fluxes[i])
+    if comp_flux_errors[i] > 0:
+        sigma_instr = 1.0857 * (comp_flux_errors[i] / comp_fluxes[i])
+    else:
+        sigma_instr = 0.05
+    weight = 1.0 / max(sigma_instr ** 2, 1e-6)
+    zero_points.append(zp)
+    zp_weights.append(weight)
+```
+
+Each zero-point contribution is weighted by the inverse variance of the instrumental magnitude error (itself derived from the Poisson-noise fraction, scaled by the magnitude-flux derivative 1.0857 = 1/ln(10)). The weighted mean zero-point and its scatter are:
+
+```python photometry.py
+zp_arr     = np.array(zero_points)
+w_arr      = np.array(zp_weights)
+zero_point = float(np.average(zp_arr, weights=w_arr))
+zp_scatter = float(np.std(zp_arr)) if len(zp_arr) > 1 else 0.05
+
+target_mag = target_instr + zero_point
+```
+
+The final photometric uncertainty is the quadrature sum of the target Poisson noise and the zero-point ensemble scatter:
+
+```python photometry.py
+# Uncertainty: quadrature sum of target Poisson noise + zero-point scatter
+sigma_poisson = 1.0857 * (target_flux_err / target_flux) if target_flux_err > 0 else 0.05
+uncertainty   = float(math.sqrt(sigma_poisson ** 2 + zp_scatter ** 2))
+```
+
+This correctly accounts for both the noise in the target's measured flux and the systematic uncertainty introduced by the spread of the comparison star ensemble.
+
+## Step 7: Ancillary Data
+
+**BJD_TCB** is computed from the `DATE-OBS` header keyword via `astropy.time`:
+
+```python photometry.py
+def _compute_bjd(header: dict) -> float:
+    date_obs = header.get("DATE-OBS", "")
+    if not date_obs:
+        return float(Time.now().tcb.jd)
+    try:
+        t = Time(date_obs, format="isot", scale="utc")
+        return float(t.tcb.jd)
+    except Exception as exc:
+        logger.warning("Could not parse DATE-OBS '%s': %s", date_obs, exc)
+        return float(Time.now().tcb.jd)
+```
+
+**Airmass** follows a three-level priority chain:
+
+```python photometry.py
+def _compute_airmass(header: dict, config: dict) -> float:
+    # 1. AIRMASS keyword in FITS header
+    am = header.get("AIRMASS")
+    if am is not None:
+        try:
+            return float(am)
+        except (TypeError, ValueError):
+            pass
+
+    # 2. Compute from target RA/Dec, DATE-OBS, and observer location in config
+    # ...
+    location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg)
+    t        = Time(date_obs, format="isot", scale="utc")
+    coord    = SkyCoord(ra=float(ra_deg) * u.deg, dec=float(dec_deg) * u.deg)
+    altaz    = coord.transform_to(AltAz(obstime=t, location=location))
+    alt_deg  = float(altaz.alt.deg)
+    return float(1.0 / math.cos(math.radians(90.0 - alt_deg)))
+
+    # 3. Return 1.5 (moderate airmass fallback)
+```
+
+The Seestar normally writes `AIRMASS` itself, so path 1 is taken in almost all cases. Path 2 is used when the header key is absent but `observatory.latitude` and `observatory.longitude` are configured. Path 3 (1.5) is the conservative fallback when no location is available.
+
+## Step 8: Quality Flag
+
+After all measurements are computed, a single quality flag is assigned based on four criteria:
+
+| Flag | SNR | Uncertainty | Comp stars | Airmass |
+|------|-----|-------------|------------|---------|
+| `good` | ≥ 20 | < 0.3 mag | ≥ 3 | < 3.0 |
+| `acceptable` | ≥ 10 (50% of threshold) | < 0.45 mag (1.5×) | ≥ 2 | any |
+| `poor` | < 10 | ≥ 0.45 mag | < 2 | any |
+
+The thresholds are all configurable via `config.yaml`:
+
+```yaml
+photometry:
+  min_comparison_stars: 3
+  snr_threshold: 20
+  max_uncertainty: 0.3
+  max_airmass: 3.0
+```
+
+The quality flag is included in the output dict and forwarded to the AAVSO submission module, where `quality=poor` observations are silently skipped by default (see `aavso.submit_poor_quality`).
+
+## Output Dict
+
+The pipeline returns a dict with 14 fields on success, or `None` on failure.
+
+<ResponseField name="target_name" type="string">
+  The target star name, taken from the `OBJECT` FITS header keyword or from `photometry.target.name` in config (config takes priority).
+</ResponseField>
+
+<ResponseField name="bjd" type="float">
+  Barycentric Julian Date in the TCB time scale, rounded to 6 decimal places. Derived from `DATE-OBS` via `astropy.time.Time.tcb.jd`.
+</ResponseField>
+
+<ResponseField name="magnitude" type="float">
+  Calibrated differential magnitude, rounded to 4 decimal places. Equal to `instr_mag(target_flux) + weighted_zero_point`.
+</ResponseField>
+
+<ResponseField name="uncertainty" type="float">
+  1σ photometric uncertainty in magnitudes, rounded to 4 decimal places. Quadrature sum of the target Poisson noise and the zero-point ensemble scatter.
+</ResponseField>
+
+<ResponseField name="filter" type="string">
+  AAVSO filter code, from `photometry.filter_name` in config. Default is `CV` (unfiltered with a V-band zero-point).
+</ResponseField>
+
+<ResponseField name="airmass" type="float">
+  Airmass at time of observation, rounded to 3 decimal places. From FITS `AIRMASS` header, AltAz computation, or 1.5 fallback in that order.
+</ResponseField>
+
+<ResponseField name="fwhm" type="float">
+  Estimated stellar FWHM in pixels, rounded to 2 decimal places. Used to set aperture and annulus radii.
+</ResponseField>
+
+<ResponseField name="snr" type="float">
+  Signal-to-noise ratio of the target flux measurement: `target_flux / target_flux_err`. Rounded to 1 decimal place.
+</ResponseField>
+
+<ResponseField name="comparison_stars" type="integer">
+  Number of comparison stars that contributed a valid zero-point to the ensemble (positive flux + known catalogue magnitude).
+</ResponseField>
+
+<ResponseField name="quality_flag" type="string">
+  One of `good`, `acceptable`, or `poor`, based on SNR, uncertainty, comparison star count, and airmass thresholds.
+</ResponseField>
+
+<ResponseField name="node_id" type="string">
+  Unique node identifier from `photometry.node_id` in config, forwarded into the AAVSO notes field and FITS headers.
+</ResponseField>
+
+<ResponseField name="zero_point" type="float">
+  Weighted mean photometric zero-point in magnitudes, rounded to 3 decimal places.
+</ResponseField>
+
+<ResponseField name="zp_scatter" type="float">
+  Standard deviation of individual comparison-star zero-points, in magnitudes, rounded to 3 decimal places. Zero-point scatter contributes directly to the reported uncertainty.
+</ResponseField>
+
+<ResponseField name="fits_file" type="string">
+  Basename of the source FITS file (not the full path). Included in AAVSO submission notes and the FITS export audit.
+</ResponseField>
+
+## Public API
+
+```python photometry.py
+from photometry import run_pipeline
+
+result = run_pipeline("/path/to/image.fits", config)
+if result:
+    print(f"{result['target_name']}: {result['magnitude']:.3f} ± {result['uncertainty']:.3f}")
+```
+
+`run_pipeline` accepts the path to any FITS file and the full application config dict. It returns the measurement dict on success or `None` if an unrecoverable error occurs at any step. All failures are logged at `ERROR` level; the function never raises.

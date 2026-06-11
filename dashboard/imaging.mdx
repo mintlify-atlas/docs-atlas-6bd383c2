@@ -1,0 +1,138 @@
+---
+title: "Camera Controls, FITS Browser, Pier Cam, and Live Stacking"
+sidebarTitle: "Imaging"
+description: "Take manual exposures, browse FITS files, view the pier camera feed, and use live stacking to accumulate signal as sub-frames arrive."
+---
+
+The Imaging panel brings together four related capabilities: manual camera control for single-frame or test exposures, a FITS file browser for reviewing and analyzing saved frames, a pier camera live view for monitoring the physical mount, and a live stacking module that co-adds incoming sub-frames to reveal faint detail in real time. All four are accessible from a single panel in the dashboard without needing a separate application.
+
+## Manual Exposure
+
+The **Expose** form lets you trigger a single camera exposure on demand. Click **Capture** to send:
+
+```json
+POST /api/camera/expose
+{
+  "duration_s": 10.0,
+  "binning": 1
+}
+```
+
+<ParamField body="duration_s" type="float" required>
+  Exposure duration in seconds. Fractional values are accepted (e.g. `0.5` for a half-second frame).
+</ParamField>
+
+<ParamField body="binning" type="integer" required>
+  Camera pixel binning factor. `1` = 1×1 (full resolution), `2` = 2×2 (quarter resolution, four times the sensitivity), etc.
+</ParamField>
+
+The default values for these fields are drawn from the node configuration:
+
+| Config key | Description |
+|---|---|
+| `camera.exposure_duration` | Pre-filled exposure duration when the Expose form loads |
+| `camera.binning` | Pre-filled binning when the Expose form loads |
+
+<Note>
+  Manual exposures are saved to the same watch directory as scheduled exposures and immediately appear in the FITS Browser. They are also logged in the observation history.
+</Note>
+
+When the exposure completes, the resulting FITS file path is returned in the response and the FITS Browser list refreshes automatically.
+
+## FITS Browser
+
+The FITS Browser panel lists every FITS file in the node's configured watch directory. Clicking **Refresh** (or waiting for the auto-refresh interval) sends:
+
+```json
+GET /api/fits/list
+
+// Response (excerpt)
+[
+  "m42_001.fits",
+  "m42_002.fits",
+  "ngc891_001.fits"
+]
+```
+
+Clicking any filename in the list opens a preview of the image, rendered directly in the browser with an auto-stretch applied for visibility. From the preview view you can:
+
+- **Run Photometry** — triggers `POST /api/photometry` on the selected file, sending it through the aperture photometry pipeline. Results appear in the Photometry status panel.
+- **Submit to AAVSO** — available after a successful photometry run; sends `POST /api/aavso` with the measured magnitude and metadata.
+- **Open in History** — links the file back to its parent observation record in the history modal.
+
+<Tip>
+  FITS files accumulate quickly during a long run. Use the filter box in the FITS Browser to search by filename prefix (e.g. `"m42"`) and focus on the frames from a specific target.
+</Tip>
+
+## Pier Camera
+
+The pier camera is an optional secondary USB camera—typically a ZWO ASI unit—mounted on the pier or tripod to provide a wide-angle view of the scope and mount during a session. It is useful for verifying that cables are not snagging, the mount is moving freely, and the scope cap is off.
+
+Enable the pier cam by setting `pier_cam.enabled: true` in `config.yaml`. When enabled, the dashboard displays a live MJPEG-style feed in the Pier Cam panel, fetched from:
+
+```
+GET /api/pier-cam/frame
+```
+
+This endpoint returns a single JPEG frame on each request. The dashboard polls it at the configured frame rate to produce the live view.
+
+The pier cam is configured with these `config.yaml` keys:
+
+| Config key | Type | Description |
+|---|---|---|
+| `pier_cam.enabled` | bool | Set to `true` to activate the pier cam feed |
+| `pier_cam.device_index` | int | USB device index of the ASI camera (0 = first connected) |
+| `pier_cam.exposure_ms` | int | Sensor exposure time in milliseconds per frame |
+| `pier_cam.gain` | int | Analog gain setting (ASI driver scale, e.g. 0–500) |
+| `pier_cam.bin` | int | Binning factor applied to the pier cam sensor |
+| `pier_cam.target_fps` | float | Target frame delivery rate for the live view |
+| `pier_cam.jpeg_quality` | int | JPEG compression quality (1–100; 80 is a good default) |
+
+<Note>
+  The pier cam runs independently of the main imaging camera and does not affect exposures or the FITS pipeline. Its frames are served as JPEGs only and are not saved to disk.
+</Note>
+
+<Warning>
+  Setting `pier_cam.target_fps` too high on a Raspberry Pi or low-power node can saturate the CPU and cause the Flask server to become unresponsive. Start with `2`–`5` fps and increase only if the node has headroom.
+</Warning>
+
+## Live Stacking
+
+Live stacking co-adds incoming sub-frames in real time to accumulate signal and improve the signal-to-noise ratio as the night progresses. Each new frame is aligned to the first frame using RANSAC-based translation estimation, then added to the running stack. Because noise averages out while signal adds coherently, SNR improves proportionally to the square root of the number of stacked frames (√N): stacking 25 frames yields a 5× SNR improvement over a single frame.
+
+Start and stop stacking with:
+
+| Action | Endpoint |
+|--------|----------|
+| Start live stacking | `POST /api/stack/start` |
+| Stop live stacking | `POST /api/stack/stop` |
+
+Both endpoints accept an empty JSON body `{}`.
+
+The stacking module is configured via `config.yaml`:
+
+| Config key | Type | Description |
+|---|---|---|
+| `stacking.frames` | int | Total number of sub-frames to accumulate before stopping automatically (0 = run until stopped manually) |
+| `stacking.exposure_s` | float | Duration of each sub-frame exposure triggered by the stacker |
+| `stacking.preview_every` | int | Update the dashboard preview PNG after every N new frames |
+
+As frames arrive, the dashboard displays a preview of the current stack in the Live Stacking panel. The preview is a PNG with auto-stretch applied so faint nebulosity becomes visible long before the full sequence is complete. The preview updates every `stacking.preview_every` frames, so setting this to `1` gives a live update after every frame at the cost of extra CPU.
+
+```json
+POST /api/stack/start
+{}
+
+// The stacker begins exposing and stacking. Progress is streamed
+// through GET /api/logs and the preview updates in the dashboard.
+```
+
+<Note>
+  RANSAC translation alignment handles small tracking errors and atmospheric drift, but it does not correct for field rotation. For mounts without polar alignment or for long focal lengths, field rotation will degrade stack quality over long sequences. Use an equatorially mounted scope with reasonable polar alignment for best results.
+</Note>
+
+<Tip>
+  Set `stacking.preview_every` to `5` or `10` for a good balance between preview freshness and CPU load on embedded hardware. On a desktop machine you can set it to `1` for frame-by-frame updates.
+</Tip>
+
+For the full module reference—including the alignment algorithm details, output file formats, and integration with the photometry pipeline—see the [Live Stacking guide](/guides/live-stacking).

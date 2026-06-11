@@ -1,0 +1,175 @@
+---
+title: "AAVSO WebObs Submission: Extended File Format and Audit Trail"
+sidebarTitle: "AAVSO Submission"
+description: "How Node v1 formats photometry results as AAVSO Extended File Format, POSTs to WebObs, handles dry-run mode, and saves a full per-observation audit trail."
+---
+
+After the photometry pipeline produces a measurement, Node v1 optionally submits it to AAVSO's WebObs API using the Extended File Format. The submission module is intentionally non-throwing: it returns a result dict with `status="error"` rather than raising, so the node can continue processing subsequent frames even if a submission fails. The complete audit trail is written to disk regardless of whether the POST succeeds, giving you a local record of every formatted observation.
+
+## Extended File Format
+
+AAVSO WebObs requires observations to be submitted as the [AAVSO Extended File Format](https://www.aavso.org/aavso-extended-file-format). Node v1 builds this document in `_format_extended()` for each measurement. A single-observation submission looks like this:
+
+```text
+#TYPE=Extended
+#OBSCODE=MXYZ
+#SOFTWARE=Boundless Skies Node v1
+#DELIM=,
+#DATE=BJD
+#OBSTYPE=CCD
+#NAME,DATE,MAG,MERR,FILT,TRANS,MTYPE,CNAME,CMAG,KNAME,KMAG,AMASS,GROUP,CHART,NOTES
+SN2025abc,2460500.123456,13.420,0.080,CV,NO,DIFF,ENSEMBLE,na,na,na,1.34,na,na,fwhm=3.2|snr=45.0|comp=7|zp_scatter=0.03|node=node_001|quality=good|fits=image.fits
+```
+
+Key format decisions reflected in the source:
+
+- `TRANS=NO` — magnitudes are not transformed to a standard photometric system.
+- `MTYPE=DIFF` — the measurement is differential (not absolute).
+- `CNAME=ENSEMBLE` / `CMAG=na` — the weighted ensemble is used rather than a single comparison star, so no individual comparison name or magnitude is listed.
+- `KNAME=na` / `KMAG=na` — no check star is used.
+- The `NOTES` field carries a pipe-delimited block of processing metadata that is not part of the AAVSO spec but is preserved in the audit trail: FWHM, SNR, comparison star count, zero-point scatter, node ID, quality flag, and source FITS filename.
+
+```python aavso_submission.py
+notes = "|".join([
+    f"fwhm={measurement.get('fwhm', 'na')}",
+    f"snr={measurement.get('snr', 'na')}",
+    f"comp={measurement.get('comparison_stars', 'na')}",
+    f"zp_scatter={measurement.get('zp_scatter', 'na')}",
+    f"node={measurement.get('node_id', 'na')}",
+    f"quality={measurement.get('quality_flag', 'na')}",
+    f"fits={measurement.get('fits_file', 'na')}",
+])
+```
+
+## Submission Status
+
+The `submit()` function always returns a dict whose `status` key holds one of five values:
+
+| Status | Meaning |
+|--------|---------|
+| `accepted` | WebObs responded HTTP 200 and the response body confirms at least one observation was uploaded. |
+| `rejected` | WebObs responded HTTP 200 but the response body contains an error, reject, invalid, or fail indicator. |
+| `skipped` | Submission was not attempted — either because `quality_flag` is `poor` and `submit_poor_quality` is `false`, or because AAVSO credentials are not configured. |
+| `dry_run` | `aavso.dry_run: true` is set; the submission file was formatted and saved but no POST was made. |
+| `error` | A network error, timeout, unexpected HTTP status, or unrecognisable response body was encountered. |
+
+WebObs response parsing is conservative: if the HTTP status is 200 and neither a count of accepted observations nor any error keyword is found, the submission is treated as `accepted` rather than `error`, so that future wording changes in AAVSO's response page do not silently misclassify successful submissions.
+
+## Dry Run Mode
+
+Set `aavso.dry_run: true` to format the Extended File Format document and write it to the audit directory without making any HTTP request. This is the recommended first step when testing a new node, as it lets you inspect the formatted submission and check that all fields are correct before using real credentials:
+
+```yaml config.yaml
+aavso:
+  observer_code: "MXYZ"
+  dry_run: true            # format and save, but do not POST to WebObs
+```
+
+With `dry_run: true`, `submit()` returns `status="dry_run"` and `file_path` points to the saved submission text. Switching to live submission is a one-line config change (`dry_run: false`) with no code changes required.
+
+## Quality Gate
+
+By default, observations with `quality_flag="poor"` are skipped without formatting or posting:
+
+```python aavso_submission.py
+quality = measurement.get("quality_flag", "poor")
+if quality == "poor" and not submit_poor:
+    logger.info(
+        "Skipping submission: quality=poor "
+        "(set aavso.submit_poor_quality: true to override)"
+    )
+    return {
+        "status":        "skipped",
+        ...
+        "message":       "quality=poor, submission skipped",
+    }
+```
+
+To submit all observations regardless of quality — for example when debugging photometry on faint targets — set:
+
+```yaml config.yaml
+aavso:
+  submit_poor_quality: true
+```
+
+See the [Photometry pipeline](/pipeline/photometry) page for the full definition of quality thresholds.
+
+## Audit Trail
+
+Every call to `submit()` writes up to three files to a date-stamped subdirectory of `aavso.audit_dir` (default: `aavso_submissions/`). Files are named using a URL-safe slug of the target name and the BJD of the observation:
+
+```
+aavso_submissions/
+└── 2025-07-14/
+    ├── SN2025abc_2460500.123456.txt           ← formatted submission text
+    ├── SN2025abc_2460500.123456_response.txt  ← raw WebObs HTTP response body
+    └── SN2025abc_2460500.123456_record.json   ← full JSON audit record
+```
+
+**`<target>_<bjd>.txt`** — the exact text POSTed to WebObs. Can be inspected or re-submitted manually.
+
+**`<target>_<bjd>_response.txt`** — the raw HTTP response body from WebObs, written even if the POST returns a non-200 status. Indispensable for diagnosing rejection reasons.
+
+**`<target>_<bjd>_record.json`** — a complete JSON audit record combining the original measurement dict, the observer code, the dry-run flag, the submission status, and the paths to both companion files:
+
+```python aavso_submission.py
+record = {
+    "submitted_at":  datetime.now(timezone.utc).isoformat(),
+    "measurement":   measurement,
+    "observer_code": observer_code,
+    "dry_run":       dry_run,
+    "status":        result["status"],
+    "accepted":      result["accepted"],
+    "rejected":      result["rejected"],
+    "message":       result["message"],
+    "file_path":     result["file_path"],
+    "response_path": result.get("response_path"),
+}
+```
+
+The audit record is written after every submission attempt, including errors and dry runs, so there is always a persistent record of what was submitted and when.
+
+## Public API
+
+```python aavso_submission.py
+from aavso_submission import submit
+
+result = submit(measurement, config)
+print(result['status'])  # 'accepted' | 'rejected' | 'skipped' | 'dry_run' | 'error'
+```
+
+`submit()` takes the measurement dict returned by `run_pipeline()` and the full application config dict. It never raises — all exceptions are caught and converted to `status="error"` so the caller can continue processing.
+
+## Result Dict
+
+<ResponseField name="status" type="string">
+  One of `accepted`, `rejected`, `skipped`, `dry_run`, or `error`. The primary outcome indicator.
+</ResponseField>
+
+<ResponseField name="accepted" type="integer">
+  Number of observations confirmed accepted by WebObs. `1` on success, `0` otherwise.
+</ResponseField>
+
+<ResponseField name="rejected" type="integer">
+  Number of observations rejected by WebObs. `1` on rejection, `0` otherwise.
+</ResponseField>
+
+<ResponseField name="file_path" type="string | null">
+  Absolute path to the saved Extended File Format submission text (`<target>_<bjd>.txt`). `null` if the file could not be written.
+</ResponseField>
+
+<ResponseField name="response_path" type="string | null">
+  Absolute path to the raw WebObs HTTP response file (`<target>_<bjd>_response.txt`). `null` in dry-run mode or if the network request was not made.
+</ResponseField>
+
+<ResponseField name="record_path" type="string | null">
+  Absolute path to the JSON audit record (`<target>_<bjd>_record.json`). `null` if the record could not be written.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  A short human-readable description of the outcome, such as `"accepted=1 rejected=0"`, `"quality=poor, submission skipped"`, or an error description.
+</ResponseField>
+
+<Warning>
+  If a submission returns `status="rejected"`, open the `*_response.txt` file in the audit directory to read the raw WebObs error message. The most common cause is an invalid or unrecognised observer code (`OBSCODE`). Verify your code at [aavso.org](https://www.aavso.org/) and update `aavso.observer_code` in `config.yaml`. Running with `dry_run: true` first lets you validate the file format before your credentials are involved.
+</Warning>

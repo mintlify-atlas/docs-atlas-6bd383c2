@@ -1,0 +1,182 @@
+---
+title: "Connect Node v1 to the Boundless Skies Cloud Network"
+sidebarTitle: "Cloud Integration"
+description: "Enable the CloudCommunicator to auto-register, send heartbeats, receive nightly observation plans, and upload photometry measurements to the Boundless Skies cloud."
+---
+
+The `CloudCommunicator` connects your Node v1 installation to the central Boundless Skies cloud, enabling automated nightly planning, real-time measurement upload, and network-wide science coordination. When the cloud is enabled, your node auto-registers itself, sends periodic heartbeats with local conditions, polls for the current nightly observation plan, and uploads photometry results immediately after each pipeline run. When the cloud is disabled (the default), none of these threads start and the node operates entirely standalone.
+
+## Enabling the Cloud
+
+Set `cloud.enabled: true` in `config.yaml` and supply your cloud URL. Leave `node_id` and `api_key` blank to trigger auto-registration on first start.
+
+```yaml config.yaml
+cloud:
+  enabled: false                 # set true to join the Boundless Skies network
+  url: ''                        # e.g. https://cloud.boundless-skies.org
+  node_id: ''                    # blank = auto-register on first start
+  api_key: ''                    # blank = auto-register on first start
+  heartbeat_interval: 60         # seconds between heartbeat POSTs
+  plan_poll_interval: 300        # seconds between observation-plan polls
+  auto_run_plans: false          # feed new cloud plans to the schedule runner automatically
+  upload_images: false           # also upload raw FITS files after each measurement
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Start the cloud communicator threads on launch. |
+| `url` | string | `''` | Base URL of the Boundless Skies cloud (no trailing slash). |
+| `node_id` | string | `''` | Assigned node identifier. Populated automatically after registration. |
+| `api_key` | string | `''` | Secret key for authenticated requests. Populated automatically after registration. |
+| `heartbeat_interval` | int | `60` | How often (seconds) to POST a heartbeat with local conditions. |
+| `plan_poll_interval` | int | `300` | How often (seconds) to GET the current nightly plan. |
+| `auto_run_plans` | bool | `false` | When `true`, newly received plan items are handed directly to the schedule runner if the node is idle. |
+| `upload_images` | bool | `false` | When `true`, the raw FITS file is uploaded alongside each measurement via `POST /api/v1/images`. |
+
+<Note>
+  When `cloud.enabled: false` (the default), no cloud threads start and the node works entirely standalone. You can enable cloud integration at any time by editing `config.yaml` and restarting `dashboard.py`.
+</Note>
+
+## Auto-Registration
+
+On first start, if `node_id` and `api_key` are both blank, the `CloudCommunicator` sends a `POST /api/v1/nodes/register` request with observatory metadata pulled from `config.yaml`. The cloud returns a `node_id` and `api_key`, which are immediately persisted to `data/cloud_state.json`. On all subsequent starts, credentials are loaded from that file, so re-registration never repeats.
+
+**Registration payload:**
+
+```json
+{
+  "node_id":          "node_001",
+  "owner_name":       "Jane Smith",
+  "latitude":         51.5074,
+  "longitude":        -0.1278,
+  "elevation":        35.0,
+  "telescope_model":  "ZWO Seestar S50",
+  "filters":          "CV",
+  "utc_offset_hours": 1.0
+}
+```
+
+The fields are sourced from the `observatory` and `photometry` sections of `config.yaml`. `utc_offset_hours` is computed automatically from the host system clock, including DST.
+
+**Persisted credentials** (`data/cloud_state.json`):
+
+```json
+{
+  "node_id": "node_001",
+  "api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+}
+```
+
+Explicit values set in `config.yaml` always take precedence over the persisted file. If you need to force re-registration, delete `data/cloud_state.json` and clear `node_id` and `api_key` in `config.yaml`.
+
+## Heartbeats
+
+Every `heartbeat_interval` seconds (default 60), the node POSTs to `POST /api/v1/nodes/heartbeat` with a `conditions` dictionary containing the current local observing conditions. The `utc_offset_hours` field is always included. Additional fields are supplied by a `get_conditions` callback registered by `dashboard.py` (e.g., temperature, humidity, sky quality — whatever sensors are available).
+
+**Heartbeat payload:**
+
+```json
+{
+  "conditions": {
+    "utc_offset_hours":  1.0,
+    "temperature_c":     12.3,
+    "humidity_pct":      68.0,
+    "sky_quality_mpsas": 20.1,
+    "seeing_arcsec":     2.4
+  }
+}
+```
+
+Authenticated requests include the headers `X-Node-Id` and `X-Api-Key`. If a heartbeat POST fails (network error or non-200 response), the failure is logged and the error surfaced on the dashboard's cloud status panel. Any queued measurement uploads are flushed to the cloud on each successful heartbeat.
+
+## Nightly Plans
+
+Every `plan_poll_interval` seconds (default 300), the node sends `GET /api/v1/plan`. When the returned `plan_id` differs from the previously seen one, the plan is treated as new. If `auto_run_plans: true` and the schedule runner is idle, the plan items are fed directly to the runner.
+
+**Plan response:**
+
+```json
+{
+  "plan": {
+    "plan_id":  "plan-2024-07-15-node001",
+    "night":    "2024-07-15",
+    "items": [
+      {
+        "target":    "SS Cyg",
+        "ra":        314.7640,
+        "dec":       43.5861,
+        "expDur":    30,
+        "expCount":  20,
+        "binning":   1,
+        "startTime": "2024-07-15T22:15:00Z"
+      },
+      {
+        "target":    "RR Lyr",
+        "ra":        291.3832,
+        "dec":       42.7848,
+        "expDur":    20,
+        "expCount":  30,
+        "binning":   1,
+        "startTime": "2024-07-15T23:45:00Z"
+      }
+    ]
+  }
+}
+```
+
+Each item uses the same format that the local schedule runner accepts, so cloud-generated plans and manually queued targets are interchangeable.
+
+## Measurement Upload
+
+After each successful photometry run, `submit_measurement()` immediately POSTs the result to `POST /api/v1/measurements`. If the upload fails (network unavailable, cloud unreachable, node not yet registered), the payload is written to `data/cloud_upload_queue.json` and retried on the next successful heartbeat. The queue is capped at 500 entries; older entries are discarded when the cap is reached.
+
+**Upload payload:**
+
+```json
+{
+  "measurement": {
+    "target_name":      "SS Cyg",
+    "bjd":              2460500.123456,
+    "magnitude":        12.341,
+    "uncertainty":      0.031,
+    "filter":           "CV",
+    "airmass":          1.24,
+    "fwhm":             3.8,
+    "snr":              52.0,
+    "comparison_stars": 9,
+    "quality_flag":     "good",
+    "node_id":          "node_001",
+    "zero_point":       22.413,
+    "zp_scatter":       0.028
+  },
+  "conditions": {
+    "utc_offset_hours": 1.0,
+    "temperature_c":    12.3
+  }
+}
+```
+
+If `upload_images: true`, the raw FITS file is uploaded in a separate multipart request to `POST /api/v1/images` immediately after the measurement. FITS uploads are fire-and-forget; a failure logs a warning but does not trigger the retry queue.
+
+**Retry queue** (`data/cloud_upload_queue.json`):
+
+The queue is a JSON array of upload payloads. It is loaded and drained on every successful heartbeat. You can inspect it directly to check for backlogged measurements. The dashboard's `/api/cloud` endpoint exposes `queued_uploads` as part of the cloud status dict.
+
+## Interrupts
+
+The cloud can push high-priority alerts to nodes (for example, a target-of-opportunity transient detected by ALeRCE or ATLAS). Every `plan_poll_interval` seconds, the node polls `GET /api/v1/interrupts` for unacknowledged interrupt records. For each unacknowledged interrupt, the node invokes the registered `on_interrupt` callback (which can pause the current schedule and slew to the new target), then acknowledges the interrupt via `POST /api/v1/interrupts/{id}/ack`.
+
+**Interrupt record:**
+
+```json
+{
+  "id":     "int-20240715-003",
+  "name":   "AT2024abc",
+  "reason": "Rapid rise detected by ALeRCE; ZTF classification: SN Ia candidate",
+  "ra":     214.9162,
+  "dec":    52.8021,
+  "acked":  false
+}
+```
+
+Interrupt acknowledgement failures are logged at DEBUG level and retried on the next poll cycle. The `on_interrupt` callback is registered by `dashboard.py`; you can supply a custom one when instantiating `CloudCommunicator` directly.

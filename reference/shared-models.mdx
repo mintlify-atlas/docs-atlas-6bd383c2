@@ -1,0 +1,346 @@
+---
+title: "shared_models: NodeInfo, Measurement, and Plan Dataclasses"
+sidebarTitle: "shared_models"
+description: "API reference for the shared_models dataclasses: NodeInfo, TargetInfo, PlanItem, ObservationPlan, and Measurement, with to_dict() and from_dict() round-tripping."
+---
+
+`shared_models` defines plain Python dataclasses used by both the Node agent and the Boundless Skies cloud, with dict round-tripping for interoperability. Every class provides `.to_dict()` for serialisation and `.from_dict(data)` for deserialisation; unknown keys in the input dict are silently ignored, making the module forward-compatible with schema additions. It has no heavy dependencies — nothing from Flask, astropy, or any other large library is imported — so both the node and the cloud server can import it at zero cost.
+
+## NodeInfo
+
+Represents one registered telescope node in the Boundless Skies network. Populated during auto-registration and stored in the cloud's node registry.
+
+```python
+from shared_models import NodeInfo
+
+node = NodeInfo(node_id="bs-node-042", latitude=51.5074, longitude=-0.1278)
+node.to_dict()          # -> plain dict for JSON serialisation
+NodeInfo.from_dict(d)   # -> NodeInfo instance, unknown keys ignored
+```
+
+<ResponseField name="node_id" type="str" default='""'>
+  Unique identifier for this node. Assigned by the cloud on registration or set explicitly in config.
+</ResponseField>
+
+<ResponseField name="owner_name" type="str" default='""'>
+  Human-readable name of the node operator.
+</ResponseField>
+
+<ResponseField name="owner_email" type="str" default='""'>
+  Contact email address for the node operator.
+</ResponseField>
+
+<ResponseField name="latitude" type="float" default="0.0">
+  Observatory latitude in decimal degrees (positive North).
+</ResponseField>
+
+<ResponseField name="longitude" type="float" default="0.0">
+  Observatory longitude in decimal degrees (positive East).
+</ResponseField>
+
+<ResponseField name="elevation" type="float" default="0.0">
+  Observatory elevation above sea level in metres.
+</ResponseField>
+
+<ResponseField name="city" type="str" default='""'>
+  Nearest city name, used for human-readable display in the cloud dashboard.
+</ResponseField>
+
+<ResponseField name="country" type="str" default='""'>
+  Country name or ISO country code.
+</ResponseField>
+
+<ResponseField name="utc_offset_hours" type="float" default="0.0">
+  Local UTC offset in fractional hours, including DST when applicable. Used for scheduling plan start times in node-local time.
+</ResponseField>
+
+<ResponseField name="telescope_model" type="str" default='"ZWO Seestar S50"'>
+  Human-readable telescope model string. Defaults to `ZWO Seestar S50`.
+</ResponseField>
+
+<ResponseField name="aperture_mm" type="float" default="50.0">
+  Telescope aperture in millimetres. Used for limiting magnitude estimates.
+</ResponseField>
+
+<ResponseField name="focal_length_mm" type="float" default="250.0">
+  Telescope focal length in millimetres.
+</ResponseField>
+
+<ResponseField name="fov_deg" type="float" default="1.27">
+  Diagonal field of view in degrees. Used for target schedulability checks.
+</ResponseField>
+
+<ResponseField name="pixel_scale_arcsec" type="float" default="2.4">
+  Image scale in arcseconds per pixel. Used by the cloud planner for astrometric feasibility.
+</ResponseField>
+
+<ResponseField name="filters" type="str" default='"CV"'>
+  Comma-separated list of available filter names (e.g. `"CV,B,V,R"`).
+</ResponseField>
+
+<ResponseField name="mag_bright_limit" type="float" default="6.0">
+  Brightest magnitude the node can safely observe without saturation. Targets brighter than this are excluded from plans.
+</ResponseField>
+
+<ResponseField name="mag_faint_limit" type="float" default="15.5">
+  Faintest magnitude reachable with acceptable SNR. Targets fainter than this are excluded from plans.
+</ResponseField>
+
+<ResponseField name="min_altitude_deg" type="float" default="25.0">
+  Minimum target altitude above the horizon in degrees. Observations below this limit are not scheduled.
+</ResponseField>
+
+<ResponseField name="max_exposure_s" type="float" default="30.0">
+  Maximum single sub-frame exposure in seconds, typically constrained by field rotation on an unguided alt-az mount.
+</ResponseField>
+
+<ResponseField name="light_pollution_mpsas" type="float" default="20.0">
+  Sky background brightness in magnitudes per square arcsecond. Higher values indicate darker skies.
+</ResponseField>
+
+<ResponseField name="bortle" type="int" default="5">
+  Bortle dark-sky scale (1 = darkest, 9 = inner-city). Used as a scheduling quality signal.
+</ResponseField>
+
+<ResponseField name="status" type="str" default='"active"'>
+  Node operational status. One of `active`, `offline`, or `disabled`. Offline and disabled nodes are excluded from nightly plan generation.
+</ResponseField>
+
+## TargetInfo
+
+Represents a deduplicated, cross-matched science target from the alert ingestion pipeline.
+
+```python
+from shared_models import TargetInfo
+
+t = TargetInfo.from_dict(alert_dict)
+print(t.name, t.ra_deg, t.dec_deg, t.target_type)
+```
+
+<ResponseField name="target_id" type="str" default='""'>
+  Internal unique identifier assigned during alert deduplication.
+</ResponseField>
+
+<ResponseField name="name" type="str" default='""'>
+  Human-readable target name (e.g. `"SN 2024abc"`, `"AT2024xyz"`).
+</ResponseField>
+
+<ResponseField name="ra_deg" type="float" default="0.0">
+  Right ascension in decimal degrees (J2000).
+</ResponseField>
+
+<ResponseField name="dec_deg" type="float" default="0.0">
+  Declination in decimal degrees (J2000).
+</ResponseField>
+
+<ResponseField name="mag" type="Optional[float]" default="None">
+  Most recently reported magnitude. `None` if no magnitude is available from any alert source.
+</ResponseField>
+
+<ResponseField name="mag_band" type="str" default='""'>
+  Photometric band of the `mag` value (e.g. `"r"`, `"V"`, `"g"`).
+</ResponseField>
+
+<ResponseField name="target_type" type="str" default='""'>
+  Science classification. One of `SN`, `CV`, `TDE`, `VAR`, `EB`, `AGN`, `GRB`, or `unknown`.
+</ResponseField>
+
+<ResponseField name="priority" type="float" default="0.5">
+  Scientific priority baseline in the range 0–1. Used by the cloud planner to rank targets. Higher values are scheduled preferentially.
+</ResponseField>
+
+<ResponseField name="time_critical" type="bool" default="false">
+  `True` for targets that must be observed at a specific epoch (e.g. GRBs, predicted maxima). Time-critical targets are prioritised over cadence targets even at lower priority scores.
+</ResponseField>
+
+<ResponseField name="cadence_hours" type="float" default="24.0">
+  Desired re-observation cadence in hours. Targets not observed within this window are given a scheduling boost.
+</ResponseField>
+
+<ResponseField name="sources" type="list" default="[]">
+  List of alert broker names that reported this target (e.g. `["alerce", "gaia", "ztf"]`).
+</ResponseField>
+
+<ResponseField name="discovered_at" type="str" default='""'>
+  ISO 8601 timestamp of the first alert for this target.
+</ResponseField>
+
+<ResponseField name="active" type="bool" default="true">
+  `False` when a target has been retired (e.g. faded below node limits or reclassified). Inactive targets are excluded from new plans.
+</ResponseField>
+
+## PlanItem
+
+Represents a single scheduled observation within a nightly plan. Field names exactly match the node dashboard schedule runner format so a `PlanItem` dict can be POSTed directly to `/api/schedule/run` or executed by `_run_schedule_bg` without transformation.
+
+```python
+from shared_models import PlanItem
+
+item = PlanItem.from_dict(plan_dict)
+node_dict = item.to_node_item()   # stripped to schedule-runner format
+```
+
+<ResponseField name="target" type="str" default='""'>
+  Human-readable target name passed to the node's pointing and photometry pipeline.
+</ResponseField>
+
+<ResponseField name="ra" type="float" default="0.0">
+  Right ascension in **decimal hours** (0–24), as required by the node schedule runner.
+</ResponseField>
+
+<ResponseField name="dec" type="float" default="0.0">
+  Declination in decimal degrees.
+</ResponseField>
+
+<ResponseField name="expDur" type="float" default="10.0">
+  Sub-frame exposure duration in seconds.
+</ResponseField>
+
+<ResponseField name="expCount" type="int" default="20">
+  Number of sub-frames to collect in this observation slot.
+</ResponseField>
+
+<ResponseField name="binning" type="int" default="1">
+  Camera binning factor (1 = unbinned, 2 = 2×2, etc.).
+</ResponseField>
+
+<ResponseField name="startTime" type="str" default='""'>
+  Scheduled start time in node-local 24-hour format `"HH:MM"`. Empty string if the item runs as soon as the previous item finishes.
+</ResponseField>
+
+<ResponseField name="target_id" type="str" default='""'>
+  Cloud-side `TargetInfo.target_id`. Ignored by the node schedule validator but included in `to_dict()` output for round-tripping.
+</ResponseField>
+
+<ResponseField name="score" type="float" default="0.0">
+  Scheduler score assigned to this item by the cloud planner. Informational only.
+</ResponseField>
+
+<ResponseField name="filter" type="str" default='"CV"'>
+  Filter to use for this observation slot.
+</ResponseField>
+
+<ResponseField name="notes" type="str" default='""'>
+  Free-text notes from the planner (e.g. visibility window, priority justification).
+</ResponseField>
+
+**Methods:**
+
+- **`.to_dict()`** — serialises all fields including cloud-side metadata.
+- **`.from_dict(data)`** — deserialises from a dict, ignoring unknown keys.
+- **`.to_node_item()`** — returns a stripped dict containing only the seven fields the node schedule runner consumes: `target`, `ra`, `dec`, `expDur`, `expCount`, `binning`, `startTime`.
+
+## ObservationPlan
+
+A complete nightly observation plan for a single node, containing an ordered list of `PlanItem` objects.
+
+```python
+from shared_models import ObservationPlan, PlanItem
+
+plan = ObservationPlan.from_dict(api_response["plan"])
+for item in plan.items:            # list[PlanItem]
+    print(item.target, item.startTime)
+payload = plan.to_dict()           # JSON-serialisable dict
+```
+
+<ResponseField name="plan_id" type="str" default='""'>
+  Unique identifier for this plan version, generated by the cloud planner.
+</ResponseField>
+
+<ResponseField name="node_id" type="str" default='""'>
+  The `node_id` this plan was generated for.
+</ResponseField>
+
+<ResponseField name="night" type="str" default='""'>
+  Local evening date this plan covers, in `YYYY-MM-DD` format.
+</ResponseField>
+
+<ResponseField name="generated_at" type="str" default='""'>
+  ISO 8601 timestamp of when this plan was generated by the cloud planner.
+</ResponseField>
+
+<ResponseField name="items" type="list[PlanItem]" default="[]">
+  Ordered list of `PlanItem` instances. `from_dict()` automatically converts raw dicts in the `items` array to `PlanItem` objects. `to_dict()` converts `PlanItem` instances back to dicts; raw dicts are passed through unchanged.
+</ResponseField>
+
+## Measurement
+
+One photometry result from `photometry.run_pipeline()`. Field names match the pipeline output dict exactly, so `Measurement.from_dict(result)` works directly on the node side, and the cloud can validate uploaded measurements using the same class.
+
+```python shared_models.py
+from shared_models import Measurement
+
+m = Measurement.from_dict(result)   # result from run_pipeline()
+if m.is_valid():
+    print(f"{m.target_name}: {m.magnitude:.3f} ± {m.uncertainty:.3f} ({m.quality_flag})")
+payload = m.to_dict()               # send to cloud API
+```
+
+<ResponseField name="target_name" type="str" default='""'>
+  Name of the observed target. Must be non-empty for `is_valid()` to return `True`.
+</ResponseField>
+
+<ResponseField name="bjd" type="float" default="0.0">
+  Barycentric Julian Date of mid-exposure. Must satisfy `2400000.0 < bjd < 2500000.0` (roughly 1858–2132 CE) for `is_valid()` to return `True`.
+</ResponseField>
+
+<ResponseField name="magnitude" type="float" default="0.0">
+  Instrumental or calibrated magnitude of the target. Must be in the range `(-5.0, 30.0)` for `is_valid()` to return `True`.
+</ResponseField>
+
+<ResponseField name="uncertainty" type="float" default="0.0">
+  1σ photometric uncertainty in magnitudes. Must satisfy `0.0 ≤ uncertainty < 5.0` for `is_valid()` to return `True`.
+</ResponseField>
+
+<ResponseField name="filter" type="str" default='"CV"'>
+  Filter bandpass used for this measurement (e.g. `"CV"`, `"V"`, `"B"`).
+</ResponseField>
+
+<ResponseField name="airmass" type="Optional[float]" default="None">
+  Airmass at the time of observation. `None` if not computed.
+</ResponseField>
+
+<ResponseField name="fwhm" type="Optional[float]" default="None">
+  Median stellar FWHM in pixels for this frame. `None` if not computed.
+</ResponseField>
+
+<ResponseField name="snr" type="Optional[float]" default="None">
+  Signal-to-noise ratio of the target aperture measurement. `None` if not computed.
+</ResponseField>
+
+<ResponseField name="comparison_stars" type="int" default="0">
+  Number of comparison stars used in the differential photometry solution.
+</ResponseField>
+
+<ResponseField name="quality_flag" type="str" default='"poor"'>
+  Pipeline quality assessment. One of `good`, `acceptable`, or `poor`. Must be one of these three values for `is_valid()` to return `True`.
+</ResponseField>
+
+<ResponseField name="node_id" type="str" default='""'>
+  `node_id` of the node that produced this measurement, populated before upload.
+</ResponseField>
+
+<ResponseField name="zero_point" type="Optional[float]" default="None">
+  Photometric zero point applied during calibration. `None` for uncalibrated measurements.
+</ResponseField>
+
+<ResponseField name="zp_scatter" type="Optional[float]" default="None">
+  RMS scatter of the zero-point solution across comparison stars (magnitudes). A proxy for calibration quality.
+</ResponseField>
+
+<ResponseField name="fits_file" type="str" default='""'>
+  Filename of the source FITS file. Used to locate the file for optional raw image upload.
+</ResponseField>
+
+**`is_valid()`** performs basic sanity bounds checking before a measurement reaches the database:
+
+```python
+# Validity checks:
+# - target_name is non-empty
+# - 2400000.0 < bjd < 2500000.0  (valid JD range)
+# - -5.0 < magnitude < 30.0
+# - 0.0 <= uncertainty < 5.0
+# - quality_flag in ("good", "acceptable", "poor")
+```
+
+Returns `True` only when all five conditions are satisfied simultaneously.

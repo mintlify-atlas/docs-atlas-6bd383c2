@@ -1,0 +1,161 @@
+---
+title: "Photometry and AAVSO Pipeline Configuration"
+sidebarTitle: "Photometry"
+description: "Configure the Node v1 photometry pipeline: target coordinates, aperture geometry, comparison star queries, AAVSO credentials, and FITS export settings."
+---
+
+The `photometry:` and `aavso:` sections of `config.yaml` control every aspect of the variable-star measurement pipeline, from how aperture geometry is derived from the measured stellar FWHM all the way through to AAVSO WebObs submission and local audit-trail storage. When `photometry.enabled` is `true` and `image_watcher.enabled` is `true`, every new FITS file that arrives on the watched path is automatically processed, measured, submitted to AAVSO, and exported as an enriched FITS file — without any manual intervention.
+
+---
+
+## Photometry
+
+<ParamField path="photometry.enabled" type="boolean" default="false">
+  Master switch for the photometry pipeline. When `true`, each new FITS file detected by the image watcher is passed to `run_pipeline()` in a background thread. Set to `false` during initial setup or dry runs to prevent accidental submissions.
+</ParamField>
+
+<ParamField path="photometry.node_id" type="string" default="node_001">
+  A unique identifier for this observing node. Embedded in every measurement record and used to label your contributions in the Boundless Skies network. Choose something memorable and stable, such as `node_london_01`.
+</ParamField>
+
+<ParamField path="photometry.filter_name" type="string" default="CV">
+  AAVSO filter code for your instrument's passband. The Seestar S50 captures broadband unfiltered light, which corresponds to the AAVSO code `CV` (Clear/Visual). Other valid codes include `V` (Johnson-V), `B` (Johnson-B), and `R` (Cousins-R).
+</ParamField>
+
+<ParamField path="photometry.gain" type="float" default="1.0">
+  Camera gain in electrons per ADU (e⁻/ADU). Used in the Poisson noise calculation for SNR and uncertainty estimation. The ZWO Seestar S50 IMX462 is approximately `1.0 e⁻/ADU`.
+</ParamField>
+
+<ParamField path="photometry.read_noise" type="float" default="5.0">
+  Camera read noise in ADU. Combined with Poisson noise to produce the photon-noise floor for each aperture measurement.
+</ParamField>
+
+### Target Override
+
+Under normal operation the pipeline reads the target name and coordinates from the FITS header (the `OBJECT`, `RA`, and `DEC` keywords written by the Seestar). The `target:` block lets you override those values — useful when headers are missing or incorrect.
+
+<ParamField path="photometry.target.name" type="string" default="">
+  Override the star name used in AAVSO submissions. Leave blank to use the `OBJECT` keyword from the FITS header.
+</ParamField>
+
+<ParamField path="photometry.target.ra_deg" type="float" default="null">
+  Override the target right ascension in decimal degrees (0–360). Leave `null` to derive the position from the FITS WCS solution.
+</ParamField>
+
+<ParamField path="photometry.target.dec_deg" type="float" default="null">
+  Override the target declination in decimal degrees (−90 to +90). Leave `null` to derive the position from the FITS WCS solution.
+</ParamField>
+
+### Plate Solving
+
+<ParamField path="photometry.astap_path" type="string" default="astap">
+  Path to the ASTAP plate-solver executable. Use `astap` if ASTAP is on your system `PATH`, or supply the full path (e.g. `/usr/local/bin/astap`). ASTAP is only called when a FITS file lacks a WCS solution; the Seestar S50 usually writes its own WCS.
+</ParamField>
+
+<ParamField path="photometry.astap_search_radius" type="integer" default="10">
+  Search radius in degrees for the ASTAP plate solve. Larger values are slower but more tolerant of large pointing errors. `10°` is appropriate for the Seestar S50's pointing accuracy.
+</ParamField>
+
+### Aperture Geometry
+
+All three aperture parameters are expressed as multiples of the measured stellar FWHM, so the geometry scales automatically with seeing conditions.
+
+<ParamField path="photometry.aperture_factor" type="float" default="2.5">
+  Photometric aperture radius as a multiple of the stellar FWHM. An aperture of `2.5 × FWHM` captures approximately 99% of a star's flux for a well-focused Gaussian PSF. Increase to `3.0` or `3.5` in poor seeing.
+</ParamField>
+
+<ParamField path="photometry.annulus_inner" type="float" default="4.0">
+  Inner radius of the sky-background annulus, in multiples of FWHM. Must be large enough to exclude the wings of the stellar PSF. The gap between `aperture_factor` and `annulus_inner` (here `2.5` to `4.0`) is the exclusion zone.
+</ParamField>
+
+<ParamField path="photometry.annulus_outer" type="float" default="6.0">
+  Outer radius of the sky-background annulus, in multiples of FWHM. The background is estimated from the sigma-clipped median of pixels within the annulus. A wider annulus gives a more robust background estimate but increases contamination from nearby stars.
+</ParamField>
+
+### Comparison Stars and Quality Gates
+
+<ParamField path="photometry.field_radius" type="float" default="0.5">
+  Half-width of the sky region searched for AAVSO VSP comparison stars, in degrees. Should be roughly matched to your instrument's field of view. The Seestar S50 has a field of view of approximately 0.5° on its short axis.
+</ParamField>
+
+<ParamField path="photometry.mag_limit" type="float" default="15.0">
+  Faintest comparison stars to retrieve from AAVSO. Stars fainter than this limit are excluded from the ensemble. `15.0` is appropriate for the Seestar S50 with typical exposures.
+</ParamField>
+
+<ParamField path="photometry.min_comparison_stars" type="integer" default="3">
+  Minimum number of usable comparison stars required for a valid observation. If fewer comparison stars are detected, the quality flag is set to `poor`. AAVSO recommends at least three comparison stars for ensemble differential photometry.
+</ParamField>
+
+<ParamField path="photometry.snr_threshold" type="float" default="20">
+  Minimum signal-to-noise ratio for the target star aperture. Observations below this SNR are flagged `poor`. Higher SNR generally corresponds to smaller photometric uncertainty.
+</ParamField>
+
+<ParamField path="photometry.max_uncertainty" type="float" default="0.3">
+  Maximum acceptable magnitude uncertainty in magnitudes. Observations with uncertainty above this value are flagged `poor`. AAVSO accepts measurements with uncertainties up to approximately `0.5` mag; tighter limits produce more reliable science.
+</ParamField>
+
+<ParamField path="photometry.max_airmass" type="float" default="3.0">
+  Maximum airmass at which to accept an observation. High airmass (low altitude) means more atmospheric extinction and differential refraction. `3.0` is the standard AAVSO ceiling.
+</ParamField>
+
+### FITS Export
+
+<ParamField path="photometry.fits_export.enabled" type="boolean" default="true">
+  When `true`, a science-ready copy of each processed FITS file is written to `fits_export.export_dir`, enriched with observatory, detector, photometry, and WCS provenance headers. Original Seestar headers are never modified.
+</ParamField>
+
+<ParamField path="photometry.fits_export.export_dir" type="string" default="fits_export">
+  Path to the directory where enriched FITS files are written. Files are organised into date subdirectories (`fits_export/YYYY-MM-DD/`). Created automatically if it does not exist.
+</ParamField>
+
+---
+
+## AAVSO
+
+The `aavso:` section provides credentials for submitting calibrated magnitudes to the AAVSO International Variable Star Index via WebObs, and controls audit-trail behaviour.
+
+<Warning>
+`aavso.username` and `aavso.password` are stored in plain text inside `config.yaml`. Keep this file private and do not commit it to a public version-control repository. Consider using a dedicated AAVSO account with a unique password rather than your primary account credentials. You can also set these values via environment variables and reference them from a wrapper script instead of hardcoding them in the file.
+</Warning>
+
+<ParamField path="aavso.observer_code" type="string" required>
+  Your AAVSO observer code (OBSCODE) — four to seven capital letters found in your AAVSO account settings. This field is required for any submission. It identifies you as the observer in the AAVSO database. Obtain one at [aavso.org](https://www.aavso.org/).
+</ParamField>
+
+<ParamField path="aavso.username" type="string" required>
+  Your AAVSO website login username or email address. Required to POST observations to WebObs. Without this, `dry_run` mode is effectively forced.
+</ParamField>
+
+<ParamField path="aavso.password" type="string" required>
+  Your AAVSO website login password. Required to POST observations to WebObs. Stored in plain text — see the warning above.
+</ParamField>
+
+<ParamField path="aavso.audit_dir" type="string" default="aavso_submissions">
+  Local directory for the audit trail. For each observation, three files are written: the AAVSO Extended Format text, the raw WebObs HTTP response, and a JSON record with all measurement fields. Organised into `YYYY-MM-DD/` subdirectories.
+</ParamField>
+
+<ParamField path="aavso.dry_run" type="boolean" default="false">
+  When `true`, the pipeline runs fully — it formats the observation, saves the audit trail, and logs the result — but does not POST to AAVSO WebObs. Use `dry_run: true` to validate your setup before going live. Set to `false` only when you are confident the pipeline is producing correct results.
+</ParamField>
+
+<ParamField path="aavso.submit_poor_quality" type="boolean" default="false">
+  When `false` (the default), observations with `quality_flag: poor` are not submitted to AAVSO; they are saved to the audit trail but skipped by the submitter. Set to `true` only if you want to upload all measurements regardless of quality for archival purposes.
+</ParamField>
+
+<ParamField path="aavso.chart_id" type="string" default="">
+  The AAVSO Variable Star Plotter (VSP) chart ID for your target, included in the submission for traceability. Find chart IDs on the [AAVSO VSP page](https://www.aavso.org/vsp). Leave blank to use `na` in the submission.
+</ParamField>
+
+---
+
+## Quality Gates
+
+The pipeline assigns one of three quality flags to every measurement based on SNR, magnitude uncertainty, comparison star count, and airmass. The thresholds are controlled by the keys documented above.
+
+| Flag | SNR | Uncertainty | Comp Stars | Airmass | Default action |
+|------|-----|-------------|------------|---------|----------------|
+| `good` | ≥ `snr_threshold` (20) | ≤ `max_uncertainty` (0.3 mag) | ≥ `min_comparison_stars` (3) | ≤ `max_airmass` (3.0) | Submitted to AAVSO |
+| `acceptable` | ≥ `snr_threshold` | > `max_uncertainty` **or** airmass approaching limit | ≥ `min_comparison_stars` | ≤ `max_airmass` | Submitted to AAVSO |
+| `poor` | < `snr_threshold` **or** < `min_comparison_stars` | Any | < `min_comparison_stars` | > `max_airmass` | Saved to audit trail only (unless `submit_poor_quality: true`) |
+
+A measurement is `poor` if **any** of the following is true: SNR below threshold, fewer comparison stars than `min_comparison_stars`, or airmass above `max_airmass`. Otherwise it is `good` if all quality criteria pass, or `acceptable` if it passes the hard gates but the uncertainty slightly exceeds `max_uncertainty`.

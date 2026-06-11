@@ -1,0 +1,142 @@
+---
+title: "Live Stacking: Real-Time Frame Accumulation with Star Alignment"
+sidebarTitle: "Live Stacking"
+description: "Node v1 LiveStacker aligns sub-frames using RANSAC translation estimation and accumulates them into a running average with √N SNR improvement."
+---
+
+Node v1 includes a `LiveStacker` class that aligns incoming sub-frames to a reference using a RANSAC-style asterism vote over detected stars and accumulates them into a running-average image. This mirrors the Seestar S50's signature live-stacking feature: as each sub-frame arrives the displayed image grows progressively cleaner, with SNR improving proportionally to the square root of the number of frames stacked. `LiveStacker` is entirely self-contained — it accepts raw image arrays from any source (ALPACA responses, FITS files, NumPy arrays) and has no hardware dependencies.
+
+## How Alignment Works
+
+Alignment is translation-only: each incoming frame is shifted in X and Y to register it onto the first accepted reference frame. Rotation is not corrected.
+
+**Detection:** Stars are detected using `DAOStarFinder` from `photutils` after sigma-clipped background subtraction. Up to `max_stars` (default 60) brightest sources are retained for matching.
+
+**RANSAC vote:** For each candidate pair of a reference star and a current-frame star, a translation hypothesis `(dx, dy)` is formed. All current-frame stars are shifted by that hypothesis and tested against the reference catalogue; the hypothesis with the most agreeing pairs (inliers within `match_tolerance_px`) wins.
+
+**Sub-pixel refinement:** Once the winning hypothesis is identified, inlier pairs are collected and the final `(dx, dy)` is taken as the median of their individual residuals, giving sub-pixel accuracy.
+
+**Warping:** The frame is shifted using `scipy.ndimage.shift` with bilinear interpolation (`order=1`), then added to the float64 running accumulator.
+
+<Warning>
+  Alignment is **translation-only**. Alt-az mounts (including the Seestar S50) also produce field rotation over time. For short stacking runs (tens of minutes) this is negligible, but for longer runs stars near the field edge will trail noticeably. Keep individual stacking runs short or call `reset()` to re-seed the reference periodically until rotation correction is added.
+</Warning>
+
+## SNR Improvement
+
+For shot-noise-limited images, stacking *N* frames of equal exposure improves the signal-to-noise ratio by a factor of √*N* compared with a single frame. The `snr_gain()` method returns this theoretical factor based on the current frame count:
+
+```python stacking.py
+def snr_gain(self) -> float:
+    """Approximate SNR improvement over a single frame (√N for shot-noise-limited)."""
+    return math.sqrt(self.frames_stacked) if self.frames_stacked else 0.0
+```
+
+For example, after stacking 20 frames the SNR gain is √20 ≈ 4.5×, equivalent to a single exposure 20× longer — without saturation risk on bright targets.
+
+## Configuration
+
+The stacking parameters used by the dashboard's automatic stacking session are set under the `stacking` key in `config.yaml`:
+
+```yaml config.yaml
+stacking:
+  frames: 20       # number of sub-frames to accumulate per session
+  exposure_s: 10.0 # sub-frame exposure duration in seconds
+  preview_every: 1 # update the dashboard preview after every N stacked frames
+```
+
+<ParamField path="stacking.frames" type="integer" default="20">
+  Total number of sub-frames to accumulate before the stacking session ends. The session stops automatically when this count is reached; call `POST /api/stack/start` again to begin a new session.
+</ParamField>
+
+<ParamField path="stacking.exposure_s" type="number" default="10.0">
+  Exposure duration in seconds for each sub-frame, passed to the camera when the dashboard drives exposures. Has no effect when frames are supplied externally (e.g., via `ImageWatcher`).
+</ParamField>
+
+<ParamField path="stacking.preview_every" type="integer" default="1">
+  How often the dashboard preview PNG is regenerated. Set to `1` to update after every stacked frame; set to `5` to update every five frames and reduce CPU usage on slower hardware.
+</ParamField>
+
+## Dashboard Integration
+
+The live stacker is accessible from the dashboard via two API endpoints:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/stack/start` | Reset the accumulator and begin a new stacking session using the current `stacking` config. |
+| `POST` | `/api/stack/stop` | Abort the current session and stop accumulating frames. |
+
+The dashboard displays a stretched PNG preview of the running stack that updates every `preview_every` accepted frames. The preview is served as a base64-encoded string embedded directly in the `/api/status` response, so no separate image endpoint is needed.
+
+## Programmatic Use
+
+`LiveStacker` can be used directly in any Python script. All constructor parameters are optional; the defaults work well for the Seestar S50's typical output:
+
+```python stacking.py
+from stacking import LiveStacker
+
+st = LiveStacker(
+    detection_fwhm=4.0,        # expected star FWHM in pixels for DAOStarFinder
+    detection_threshold=5.0,   # detection threshold in units of background sigma
+    max_stars=60,              # maximum stars to use for alignment matching
+    match_tolerance_px=2.0,    # inlier radius in pixels for RANSAC vote
+    min_inliers=4,             # minimum inliers required to accept alignment
+    max_offset_px=300.0,       # reject frames with |offset| larger than this
+)
+
+for frame_array in frames:
+    info = st.add_frame(frame_array)
+    print(f"Stacked {info['frames_stacked']}/{info['frames_total']}  "
+          f"SNR gain: {info['snr_gain']:.2f}x  offset: {info['offset']}")
+
+avg_image = st.stacked_image()    # float32 mean stack (None if no frames accepted)
+preview   = st.preview_png_b64()  # base64 PNG ready for <img src="data:image/png;base64,...">
+st.reset()                        # clear accumulator and start fresh
+```
+
+`add_frame()` accepts any input that can be coerced to a 2-D NumPy array. Colour images in ALPACA `(plane, x, y)` or `(x, y, plane)` layout are automatically collapsed to luminance by averaging the smallest axis.
+
+## add_frame() Return Dict
+
+Every call to `add_frame()` returns a status dict, regardless of whether the frame was accepted:
+
+<ResponseField name="accepted" type="boolean">
+  `True` if the frame was aligned and added to the stack; `False` if it was rejected.
+</ResponseField>
+
+<ResponseField name="reason" type="string">
+  Human-readable reason for the outcome. For accepted frames: `"reference frame"` (first frame) or `"stacked"`. For rejected frames: the failure reason, e.g. `"alignment failed (too few matching stars)"`, `"offset out of range (350.2,12.1)"`, `"frame size differs from reference"`, or `"reference frame has too few stars"`.
+</ResponseField>
+
+<ResponseField name="frames_stacked" type="integer">
+  Number of frames successfully added to the accumulator so far (including this one if accepted).
+</ResponseField>
+
+<ResponseField name="frames_total" type="integer">
+  Total number of frames submitted to `add_frame()`, including rejected ones.
+</ResponseField>
+
+<ResponseField name="frames_rejected" type="integer">
+  Number of frames rejected for any reason since the last `reset()`.
+</ResponseField>
+
+<ResponseField name="offset" type="tuple[float, float]">
+  The `(dx, dy)` translation in pixels applied to this frame to register it onto the reference, rounded to 2 decimal places. `(0.0, 0.0)` for the reference frame and for rejected frames.
+</ResponseField>
+
+<ResponseField name="inliers" type="integer">
+  Number of star pairs that agreed with the winning alignment hypothesis (RANSAC inliers). Useful for gauging alignment quality — more inliers means a more confident registration.
+</ResponseField>
+
+<ResponseField name="snr_gain" type="float">
+  Current √N SNR gain factor relative to a single frame, rounded to 2 decimal places. For example `4.47` after 20 frames.
+</ResponseField>
+
+## Preview Rendering
+
+`preview_png_b64()` renders the current mean stack into a viewable 8-bit PNG using the following pipeline:
+
+1. **Percentile clip:** Low and high levels are set to the 1st and 99.5th percentile of the stack, clamping extreme hot pixels and the sky background before stretching.
+2. **Asinh stretch:** After normalising to [0, 1], a mild `arcsinh(x × 10) / arcsinh(10)` stretch is applied. This lifts faint nebulosity and dim stars while preventing bright cores from washing out — the same perceptual approach used by the Seestar app's own live view.
+3. **Downscale:** If either dimension exceeds `max_px` (default 720 pixels), the image is downscaled proportionally using Pillow's resize, keeping the aspect ratio intact.
+4. **Encode:** The result is saved as a PNG into a `BytesIO` buffer and base64-encoded for embedding directly in JSON API responses or `data:` URIs.

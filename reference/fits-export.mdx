@@ -1,0 +1,152 @@
+---
+title: "fits_export module: export_enhanced_fits() API Reference"
+sidebarTitle: "fits_export"
+description: "API reference for fits_export.export_enhanced_fits(): copies a FITS file to a dated subdirectory and enriches the header with observatory and processing metadata."
+---
+
+The `fits_export` module provides `export_enhanced_fits()`, which copies a source FITS file into a structured, dated output directory and enriches the copy's primary HDU header with observatory, detector, and processing metadata drawn from the configuration and the photometry result dict. Original Seestar header keywords are never overwritten — new keywords are added only when absent from the source file, preserving the camera-reported values for downstream archival pipelines. HISTORY lines are always appended unconditionally.
+
+---
+
+## export_enhanced_fits()
+
+```python
+from fits_export import export_enhanced_fits
+
+path = export_enhanced_fits(
+    source_fits: str,
+    result: dict,
+    config: dict,
+    export_dir: Optional[str] = None,
+) -> Optional[str]
+```
+
+Copies `source_fits` into the export directory tree and enriches the copy's FITS headers with observatory, detector, and photometry metadata.
+
+<ParamField path="source_fits" type="str" required>
+  Absolute or relative path to the original FITS file produced by the Seestar. The file is copied with `shutil.copy2` (preserving filesystem timestamps) before any header modifications are made, so the source file is never altered.
+</ParamField>
+
+<ParamField path="result" type="dict" required>
+  Photometry result dict from `photometry.run_pipeline()`. Used to populate the `AIRMASS`, `BJD-OBS`, `BARY-SYS`, and `HISTORY` keywords, and to determine the output date subdirectory from `result["bjd"]`.
+</ParamField>
+
+<ParamField path="config" type="dict" required>
+  Loaded configuration dict. Observatory metadata is read from `config["observatory"]`, detector parameters from `config["photometry"]`, and observer identity from `config["aavso"]`. See [Config Keys](#config-keys) for full details.
+</ParamField>
+
+<ParamField path="export_dir" type="str" default="None">
+  Base directory for the export tree. When `None`, the value of `config["photometry"]["fits_export"]["export_dir"]` is used, falling back to `"fits_export"` if that key is also absent. The directory is created automatically if it does not exist.
+</ParamField>
+
+Returns the path to the exported and enriched FITS file as a string, or `None` if either the file copy or the header update fails.
+
+---
+
+## Output Path
+
+Exported files are stored under:
+
+```
+<export_dir>/<YYYY-MM-DD>/<original_basename>
+```
+
+The date component is derived using the following priority order:
+
+1. **Result BJD** — `result["bjd"]` is converted from TCB Julian Date to UTC calendar date via `astropy.time.Time`.
+2. **FITS DATE-OBS header** — the first 10 characters of the `DATE-OBS` keyword in the source file are used as the date string.
+3. **Today's UTC date** — `datetime.now(timezone.utc).strftime("%Y-%m-%d")` is used as a last resort.
+
+The subdirectory is created with `os.makedirs(..., exist_ok=True)` so concurrent exports to the same date directory are safe.
+
+---
+
+## Headers Written
+
+The following FITS keywords are written to the copy's primary HDU. All keywords are set using `_set_if_absent()`, meaning they are only written when the keyword does not already exist in the source header — preserving camera-reported values. HISTORY lines are the exception: they are always appended, never overwrite.
+
+| Keyword | Source | Notes |
+|---------|--------|-------|
+| `TELESCOP` | `observatory.telescope` | Default: `"ZWO Seestar S50"` |
+| `INSTRUME` | `observatory.instrument` | Default: `"ZWO Seestar S50 IMX462"` |
+| `OBSERVER` | `observatory.observer` → `aavso.observer_code` | Set only if non-empty |
+| `SITENAME` | `observatory.name` | Set only if non-empty |
+| `SITELAT` | `observatory.latitude` → `safety.observer.latitude` | Decimal degrees |
+| `OBSLAT` | Same as `SITELAT` | Alias for compatibility |
+| `SITELONG` | `observatory.longitude` → `safety.observer.longitude` | Decimal degrees |
+| `OBSLONG` | Same as `SITELONG` | Alias for compatibility |
+| `SITEELEV` | `observatory.elevation` | Metres above sea level; default `0.0` |
+| `GAIN` | `photometry.gain` | e⁻/ADU; default `1.0` |
+| `RDNOISE` | `photometry.read_noise` | Electrons; default `5.0` |
+| `IMAGETYP` | Hardcoded | `"LIGHT"` |
+| `RADESYS` | Hardcoded | `"ICRS"` |
+| `EQUINOX` | Hardcoded | `2000.0` |
+| `AIRMASS` | `result["airmass"]` | Written only when `result["airmass"]` is not `None` |
+| `BJD-OBS` | `result["bjd"]` | Barycentric Julian Date (TCB); written only when present |
+| `BARY-SYS` | Hardcoded `"TCB"` | Written alongside `BJD-OBS` |
+| `SWCREATE` | `photometry.node_id` | Value: `"Boundless Skies Node <node_id>"` |
+| `DATE-BLD` | `datetime.now(UTC)` | ISO 8601 UTC timestamp of header enrichment |
+| `HISTORY` | Multiple appends | Always added; see below |
+
+### HISTORY Lines
+
+Four HISTORY lines are conditionally appended (never overwrite existing history):
+
+1. `"Processed by Boundless Skies Node v1 (<node_id>)"` — always appended.
+2. `"Differential photometry: mag=<mag>+/-<err> snr=<snr> quality=<flag>"` — when `result["magnitude"]` is present.
+3. `"BJD-OBS computed via astropy barycentric correction (TCB)"` — when `result["bjd"]` is present.
+4. `"Comparison stars used: <N>"` — when `result["comparison_stars"]` is present.
+5. `"Zero point: <zp>+/-<zp_scatter> mag"` — when `result["zero_point"]` is present.
+6. `"Astrometric solution: WCS present (Seestar or ASTAP)"` — when `CD1_1` or `CDELT1` is found in the (post-copy) header.
+
+---
+
+## Config Keys
+
+<ParamField path="observatory.telescope" type="str" default="ZWO Seestar S50">
+  Written to `TELESCOP`. Should match the IAU-registered telescope name if submitting to archives.
+</ParamField>
+
+<ParamField path="observatory.instrument" type="str" default="ZWO Seestar S50 IMX462">
+  Written to `INSTRUME`.
+</ParamField>
+
+<ParamField path="observatory.observer" type="str">
+  Written to `OBSERVER`. Falls back to `aavso.observer_code` if absent.
+</ParamField>
+
+<ParamField path="observatory.name" type="str">
+  Written to `SITENAME` when non-empty.
+</ParamField>
+
+<ParamField path="observatory.latitude" type="float">
+  Observer latitude in decimal degrees. Falls back to `safety.observer.latitude` if absent.
+</ParamField>
+
+<ParamField path="observatory.longitude" type="float">
+  Observer longitude in decimal degrees. Falls back to `safety.observer.longitude` if absent.
+</ParamField>
+
+<ParamField path="observatory.elevation" type="float" default="0.0">
+  Observatory elevation in metres above sea level, written to `SITEELEV`.
+</ParamField>
+
+<ParamField path="photometry.gain" type="float" default="1.0">
+  CCD gain in e⁻/ADU, written to `GAIN`.
+</ParamField>
+
+<ParamField path="photometry.read_noise" type="float" default="5.0">
+  Read noise in electrons, written to `RDNOISE`.
+</ParamField>
+
+<ParamField path="photometry.node_id" type="str" default="node_unknown">
+  Node identifier written into `SWCREATE` and the first HISTORY line.
+</ParamField>
+
+<ParamField path="photometry.fits_export.export_dir" type="str" default="fits_export">
+  Default base export directory, used when `export_dir` is not passed as an argument.
+</ParamField>
+
+<ParamField path="aavso.observer_code" type="str">
+  AAVSO observer code. Used as the fallback value for `OBSERVER` when `observatory.observer` is not set.
+</ParamField>

@@ -1,0 +1,63 @@
+---
+title: "geolocation module: IP-Based Observatory Location Detection"
+sidebarTitle: "geolocation"
+description: "API reference for geolocation.detect_location() and enrich_config_with_location(): auto-detect observatory lat/lon from IP geolocation and update the config dict in place."
+---
+
+The `geolocation` module auto-detects the observatory's latitude and longitude from the machine's public IP address (via ip-api.com), populating `observatory.latitude/longitude` and `safety.observer.latitude/longitude` in the config if not already set. This lets a node become schedulable immediately after installation without requiring the operator to look up and enter precise coordinates — especially useful for portable setups or first-time deployments.
+
+## detect_location()
+
+```python
+from geolocation import detect_location
+
+loc = detect_location()  # -> Optional[Dict[str, float]]
+# Returns: {"latitude": 37.7749, "longitude": -122.4194} or None on failure
+```
+
+Issues a single `GET` request to `http://ip-api.com/json/` using the `requests` library. The response JSON is expected to contain `status: "success"` along with `lat` and `lon` float fields.
+
+Returns `None` in any of the following cases:
+
+- The `requests` library is not installed (logged at `WARNING` level).
+- The HTTP response status code is not `200` (logged at `DEBUG` level).
+- The response JSON contains `status` other than `"success"` (logged at `DEBUG` level with the `message` field if present).
+- Any other network or parsing exception is raised (logged at `DEBUG` level).
+
+On success, detection is also logged at `INFO` level with the city, country, and rounded coordinates for easy confirmation in node logs.
+
+**Service details:** ip-api.com free tier — no API key required, rate-limited to 45 requests per minute. The node calls this function at most once per startup (see `enrich_config_with_location()` below), so rate limiting is not a concern in normal operation.
+
+## enrich_config_with_location()
+
+```python
+from geolocation import enrich_config_with_location
+
+config = enrich_config_with_location(config: dict) -> dict
+```
+
+Conditionally populates location fields in the config dict in place, then returns the same dict. The function is safe to call even if `config` is `None` (treated as an empty dict).
+
+**Priority chain:**
+
+1. **Explicit config values** — if both `config["observatory"]["latitude"]` and `config["observatory"]["longitude"]` are present and non-zero, detection is skipped entirely and the config is returned unchanged.
+2. **Auto-detect from IP** — if either coordinate is absent or zero, `detect_location()` is called. On success, both `observatory.latitude`, `observatory.longitude`, `safety.observer.latitude`, and `safety.observer.longitude` are written into the config.
+3. **Leave unchanged** — if detection returns `None`, the config is returned as-is (coordinates remain at `0.0` or whatever was previously set).
+
+The `observatory` and `safety.observer` sub-dicts are created if they do not already exist.
+
+```python geolocation.py
+import yaml
+from geolocation import enrich_config_with_location
+
+with open("config.yaml") as f:
+    config = yaml.safe_load(f)
+
+config = enrich_config_with_location(config)
+print(config["observatory"]["latitude"])   # e.g. 37.7749
+print(config["observatory"]["longitude"])  # e.g. -122.4194
+```
+
+<Note>
+  ip-api.com returns **city-level precision** (approximately ±5–20 km depending on ISP and region). This is sufficient for airmass calculations, altitude-constraint enforcement, and dawn/dusk parking azimuth estimation, but is not suitable for high-precision astrometric plate-solving or parallax work. If sub-arcsecond astrometry is required, set `observatory.latitude` and `observatory.longitude` explicitly in `config.yaml` using GPS-quality coordinates.
+</Note>

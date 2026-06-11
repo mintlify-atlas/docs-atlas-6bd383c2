@@ -1,0 +1,130 @@
+---
+title: "Boundless Skies Node v1: Telescope Automation for Everyone"
+sidebarTitle: "Introduction"
+description: "Node v1 is the telescope control and science pipeline layer of the Boundless Skies network — automate observations, photometry, and AAVSO submission from a Seestar S50."
+---
+
+Boundless Skies is an accessible astronomy charity that operates the world's first automated telescope network designed from the ground up for people with disabilities. Seestar smart telescope owners donate their telescope's nights to the network; an AI-driven pipeline automatically schedules observations of scientifically valuable targets, processes the data into calibrated photometry, and submits it to professional astronomical databases. Members contribute to real science — supernovae, novae, variable stars, transient phenomena — without physical effort, technical expertise, or significant cost. **Node v1** is Layer 4 of that architecture: the software that runs on a member's computer, controls the telescope, watches for new images, and drives the photometry pipeline from raw FITS file all the way to an AAVSO-accepted observation.
+
+## What is Node v1?
+
+Node v1 is a Python 3.10+ application that ties together every local component of a Boundless Skies observatory node. At its core is a **Flask web dashboard** served on port `5173`, which provides a full browser-based control panel — telescope slewing, scheduling, imaging, photometry status, and live logs — with no GUI dependencies beyond a modern browser.
+
+Alongside the dashboard, three background daemon threads run continuously:
+
+- **SafetyManager** — a heartbeat watchdog that monitors the telescope connection every 30 seconds, automatically reconnects on drop, parks the mount at astronomical dawn using a NOAA solar-elevation algorithm, enforces sky-area and horizon masks, and handles `SIGTERM`/`SIGINT` with an emergency park.
+- **ImageWatcher** — an OS-native filesystem event monitor (FSEvents on macOS, inotify on Linux, kqueue on BSD) that watches the Seestar's SMB share directory for new `.fits` files, debounces partial writes, extracts FITS headers, and triggers the photometry pipeline automatically on each new file.
+- **CloudCommunicator** — when `cloud.enabled: true`, handles auto-registration with the Boundless Skies cloud server, sends 60-second heartbeats with local conditions, polls for nightly observation plans, listens for high-priority interrupt targets, and uploads photometry measurements with a disk-backed retry queue.
+
+The **photometry pipeline** (`photometry.py`) runs on every new FITS file: it checks or acquires WCS via ASTAP plate-solving, locates the target, estimates the PSF FWHM, retrieves comparison stars from the AAVSO VSP API with a Gaia DR3 fallback, performs circular-aperture differential photometry, computes a weighted ensemble zero-point, derives a calibrated magnitude with uncertainty, classifies quality, and hands the result to `aavso_submission.py` for WebObs upload and audit-trail writing.
+
+<Note>
+  Node v1 is **Layer 4** in the Boundless Skies pipeline. Layers 1–3 (alert ingestion, scoring, scheduling) run in the cloud. Layer 5 onwards (multi-node cross-validation, batch AAVSO submission, the mobile app) are built on top of the measurements Node v1 produces.
+</Note>
+
+## What is ALPACA?
+
+ALPACA — **Astronomy Low-level Control And Automation** — is an open HTTP/JSON protocol maintained by the [ASCOM Initiative](https://ascom-standards.org/). It defines a standard REST API for telescope mounts, cameras, focusers, filter wheels, and other observatory hardware. Any client that speaks HTTP can control any ALPACA-compliant device without installing proprietary drivers.
+
+For Boundless Skies this matters enormously: Seestar S50 owners run the ZWO ALPACA server on the telescope itself, making it reachable over the local network on a well-known port. Node v1 speaks directly to that endpoint — no USB cables, no driver installation, no Windows-only middleware. The same `alpaca/` client layer in Node v1 can control any ALPACA-compatible telescope, focuser, or camera with zero code changes.
+
+<Tip>
+  The Seestar S50 advertises its ALPACA server via UDP broadcast on port `32227`. Node v1's **Discover** button sends this broadcast and lists all servers found on the LAN — no IP address entry required.
+</Tip>
+
+## Architecture
+
+The full component tree below shows every module, thread, and API endpoint that makes up Node v1. Each branch is explained in the sections that follow.
+
+```text
+dashboard.py (Flask, port 5173)
+  │
+  ├─ API endpoints
+  │   ├─ /api/discover, /api/connect, /api/disconnect
+  │   ├─ /api/telescope/unpark, park, tracking, nudge, moveaxis
+  │   ├─ /api/slew                        — RA/Dec or Alt/Az
+  │   ├─ /api/camera/expose, abort
+  │   ├─ /api/schedule/run, status, abort — multi-target queue
+  │   ├─ /api/catalog                     — object catalog (pyongc)
+  │   ├─ /api/photometry, /api/aavso       — pipeline status
+  │   ├─ /api/fits/list, download          — FITS file browser
+  │   ├─ /api/history, history/<id>        — observation gallery
+  │   ├─ /api/safety, horizon-mask, horizon-scan
+  │   ├─ /api/pier-cam/stream, snapshot
+  │   ├─ /api/config (GET/POST)            — live config editor
+  │   ├─ /api/status                       — full system state
+  │   └─ /api/logs                         — SSE log stream
+  │
+  ├─ SafetyManager (daemon thread)
+  │   ├─ Heartbeat monitor (every 30 s)
+  │   ├─ Reconnect with backoff
+  │   ├─ Dawn parking (NOAA solar elevation algorithm)
+  │   ├─ Sky area / horizon mask enforcement
+  │   └─ SIGTERM / SIGINT → emergency park
+  │
+  ├─ ImageWatcher (daemon thread, when enabled)
+  │   ├─ OS file system events (FSEvents / inotify / kqueue)
+  │   ├─ Debounce for partial writes
+  │   ├─ FITS header extraction
+  │   └─ Triggers photometry pipeline on new file
+  │
+  ├─ Photometry pipeline (photometry.py)
+  │   ├─ WCS check / ASTAP plate solve
+  │   ├─ AAVSO VSP + Gaia DR3 comparison stars
+  │   ├─ Aperture photometry (photutils)
+  │   ├─ Differential photometry + quality flag
+  │   └─ → AAVSO submission + FITS export
+  │
+  ├─ CloudCommunicator (daemon threads, when cloud.enabled)
+  │   ├─ Auto-registration with the Boundless Skies cloud
+  │   ├─ Heartbeats with local conditions
+  │   ├─ Observation-plan polling → schedule runner
+  │   ├─ Interrupt polling (high-priority targets)
+  │   └─ Measurement upload after each photometry run (disk-backed retry queue)
+  │
+  └─ DeviceManager → AlpacaClient (HTTP/JSON)
+       ├─ Telescope
+       ├─ Camera
+       ├─ Focuser (optional)
+       └─ FilterWheel (optional)
+```
+
+**dashboard.py** is the single entry point for the Flask application. It owns all API routes, initialises the shared state dictionary, and spawns the background threads.
+
+**SafetyManager** (`alpaca/safety_manager.py`) is always enabled by default. It is the guardian of the hardware session — every slew and exposure command is gated on `SafetyManager.is_safe()` returning `True`.
+
+**ImageWatcher** (`image_watcher.py`) is disabled by default and activated by setting `image_watcher.enabled: true`. It uses the `watchdog` library for cross-platform filesystem events and applies a configurable debounce delay (default `2.0 s`) to wait for the Seestar to finish writing a FITS file before opening it.
+
+**DeviceManager** (`alpaca/device_manager.py`) orchestrates connections to all configured ALPACA devices — telescope, camera, focuser, filter wheel, and cover calibrator — calling each device's `connect()` and `disconnect()` in sequence.
+
+## Phase 0 Status
+
+Phase 0 goal is to prove the science works: one AAVSO-accepted automated observation from a Seestar, with a magnitude agreeing within 0.15 mag of a known standard.
+
+| Milestone | Description | Status |
+|-----------|-------------|--------|
+| M1 | ALPACA API client layer (telescope / camera / focuser / filterwheel) | ✅ Done |
+| M2 | ImageWatcher — detect new FITS files from Seestar SMB share | ✅ Done |
+| M3 | Local photometry pipeline (plate-solve → comp stars → aperture photometry → magnitude) | ✅ Done |
+| M4 | First AAVSO-accepted automated observation (magnitude within 0.15 mag of known) | 🔄 In progress |
+
+<Info>
+  Phase 1 builds on this foundation with packaged installers, a member account system, night summary notifications, and the first Flutter mobile app. Phase 2 is the public launch targeting 50 active nodes across three continents.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="wrench" href="/installation">
+    Install Node v1 on macOS, Linux, or Windows — virtual environment, pip dependencies, and optional ASTAP plate solver.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    From a fresh install to a working photometry observation in 15 minutes, with a dry-run mode that needs no hardware.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration/overview">
+    Full reference for `config.yaml` — observatory coordinates, photometry parameters, AAVSO credentials, and safety settings.
+  </Card>
+  <Card title="Dashboard" icon="gauge" href="/dashboard/overview">
+    Explore every panel of the Flask dashboard: telescope controls, scheduling, FITS browser, live logs, and the config editor.
+  </Card>
+</CardGroup>

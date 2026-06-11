@@ -1,0 +1,197 @@
+---
+title: "SafetyManager: Telescope Watchdog and Dawn Parking Reference"
+sidebarTitle: "SafetyManager"
+description: "API reference for SafetyManager: lifecycle methods, is_safe(), status(), heartbeat watchdog, reconnect logic, and automatic dawn parking."
+---
+
+`SafetyManager` is a daemon thread component that monitors telescope connectivity and automatically parks the mount at dawn or on heartbeat loss. It runs as a background watchdog: the dashboard poll cycle sends a heartbeat on each tick, and if `disconnect_timeout` seconds pass without a heartbeat the manager attempts a configurable number of reconnection retries before issuing an emergency park command. It also computes the local astronomical, nautical, or civil dawn time and parks the telescope when that threshold is crossed. All pipeline and dashboard code should gate observations on `_safety_mgr.is_safe()` to ensure the system halts safely under adverse conditions.
+
+---
+
+## Constructor
+
+```python
+from alpaca.safety_manager import SafetyManager
+
+mgr = SafetyManager(config: dict)
+```
+
+Initialises the `SafetyManager` from `config["safety"]`. No threads are started at construction time — call `start()` to activate the watchdog.
+
+<ParamField path="safety.enabled" type="bool" default="true">
+  Master enable switch. When `false`, `is_safe()` always returns `True` and the watchdog thread exits immediately after `start()` — useful for bench testing without a connected telescope.
+</ParamField>
+
+<ParamField path="safety.disconnect_timeout" type="float" default="60">
+  Number of seconds without a heartbeat before the manager considers the connection lost and begins reconnection attempts.
+</ParamField>
+
+<ParamField path="safety.heartbeat_interval" type="float" default="10">
+  Expected interval in seconds between heartbeat signals from the dashboard poll cycle. Used to set watchdog timer granularity.
+</ParamField>
+
+<ParamField path="safety.reconnect_attempts" type="int" default="3">
+  Maximum number of reconnection attempts before the manager gives up and issues an emergency park command.
+</ParamField>
+
+<ParamField path="safety.reconnect_delay" type="float" default="15">
+  Delay in seconds between successive reconnection attempts.
+</ParamField>
+
+<ParamField path="safety.park_at_dawn" type="bool" default="true">
+  When `true`, the telescope is automatically parked once the configured `dawn_type` threshold is reached. When `false`, dawn monitoring is still computed and reported in `status()` but no park command is sent.
+</ParamField>
+
+<ParamField path="safety.dawn_type" type="str" default="astronomical">
+  Determines which solar elevation defines dawn. One of `"astronomical"` (sun at −18°), `"nautical"` (sun at −12°), or `"civil"` (sun at −6°). See [Dawn Parking](#dawn-parking) for details.
+</ParamField>
+
+<ParamField path="safety.observer.latitude" type="float">
+  Observer latitude in decimal degrees (positive = North). Required for dawn time computation; if zero or absent, dawn parking is skipped.
+</ParamField>
+
+<ParamField path="safety.observer.longitude" type="float">
+  Observer longitude in decimal degrees (positive = East). Required alongside `latitude` for dawn time computation.
+</ParamField>
+
+---
+
+## Lifecycle
+
+### attach_telescope()
+
+```python
+mgr.attach_telescope(telescope) -> None
+```
+
+Attaches a telescope device handle (an Alpaca `Telescope` object or equivalent) that the `SafetyManager` will use to issue park commands. Should be called before `start()`. If no telescope is attached, the watchdog still monitors heartbeat and dawn but cannot issue a park command on trigger.
+
+### start()
+
+```python
+mgr.start() -> None
+```
+
+Starts the background watchdog daemon thread. The thread runs at `heartbeat_interval` granularity, checking elapsed time since the last heartbeat and comparing the current UTC time against the computed dawn time. Safe to call multiple times — subsequent calls after the thread is already running are no-ops.
+
+### stop()
+
+```python
+mgr.stop() -> None
+```
+
+Signals the watchdog thread to exit and joins it. Any in-progress reconnection sequence is abandoned. After `stop()` returns, `is_safe()` continues to return the last computed state; `start()` may be called again to restart monitoring.
+
+---
+
+## is_safe()
+
+```python
+mgr.is_safe() -> bool
+```
+
+Returns `True` if the system is in a safe state to continue observing; `False` if the system should halt. A `False` result is returned when any of the following conditions holds:
+
+- More than `disconnect_timeout` seconds have elapsed since the last heartbeat (telescope connectivity lost).
+- The current UTC time is past the computed dawn threshold for today (`dawn_type`).
+
+When `safety.enabled` is `false`, always returns `True`.
+
+---
+
+## status()
+
+```python
+mgr.status() -> dict
+```
+
+Returns a snapshot dict describing the current safety state. Suitable for display on the dashboard status panel.
+
+<ResponseField name="safe" type="bool">
+  Current result of `is_safe()` — `True` if observing may continue, `False` if the system has triggered a safety halt.
+</ResponseField>
+
+<ResponseField name="reason" type="str">
+  Human-readable description of the safety state. Examples: `"OK"`, `"heartbeat timeout"`, `"past astronomical dawn"`, `"safety disabled"`.
+</ResponseField>
+
+<ResponseField name="last_heartbeat" type="float">
+  Unix timestamp (from `time.monotonic()` or `time.time()`) of the most recent heartbeat received from the dashboard poll cycle. `0.0` if no heartbeat has been received since `start()`.
+</ResponseField>
+
+<ResponseField name="dawn_time" type="str">
+  ISO 8601 UTC string of today's computed dawn time for the configured `dawn_type` and observer coordinates. Example: `"2025-06-01T02:47:00+00:00"`. `"unknown"` if lat/lon are not configured or the computation fails.
+</ResponseField>
+
+---
+
+## Heartbeat Watchdog
+
+The dashboard poll cycle (typically driven by a scheduler or a UI refresh loop) is expected to call an internal heartbeat method on each tick. The watchdog thread monitors the elapsed time since the last heartbeat:
+
+1. If `elapsed > disconnect_timeout`, the manager logs a warning and begins a reconnection sequence.
+2. Reconnection is attempted up to `reconnect_attempts` times, with `reconnect_delay` seconds between each attempt.
+3. If all reconnection attempts fail, the manager calls `telescope.Park()` via the attached device handle (emergency park) and sets `is_safe()` to return `False`.
+4. If a heartbeat is received at any point during the reconnection sequence, the sequence is aborted and normal monitoring resumes.
+
+The watchdog thread is created as a daemon thread (`daemon=True`) so it does not prevent process exit.
+
+---
+
+## Dawn Parking
+
+When `safety.park_at_dawn` is `true`, the watchdog computes the time at which the sun crosses the elevation threshold corresponding to `dawn_type` for the configured observer location:
+
+| `dawn_type` | Solar Elevation | Description |
+|-------------|----------------|-------------|
+| `astronomical` | −18° | Standard end-of-night for deep-sky photometry; sky background rises significantly above this point |
+| `nautical` | −12° | Useful for bright targets or when a slightly shorter night is acceptable |
+| `civil` | −6° | Latest safe limit; horizon glow is already visible |
+
+Dawn time is computed once per `start()` call (and recomputed each calendar day by the watchdog loop). If `observer.latitude` and `observer.longitude` are both zero or absent, dawn computation is skipped and `dawn_time` is reported as `"unknown"` in `status()`.
+
+When the current UTC time crosses the dawn threshold, the manager:
+
+1. Logs the event at `WARNING` level.
+2. Calls `telescope.Park()` if a telescope handle is attached.
+3. Sets the internal state so `is_safe()` returns `False` for the remainder of the night.
+
+---
+
+## Extending SafetyManager
+
+Custom safety checks can be added by subclassing `SafetyManager`. Override the internal watchdog loop body to add domain-specific checks — weather station humidity, cloud sensor readings, mount limit switches, etc. Always gate any observing operation on `_safety_mgr.is_safe()`:
+
+```python
+from alpaca.safety_manager import SafetyManager
+
+class WeatherSafetyManager(SafetyManager):
+    def __init__(self, config: dict, weather_client) -> None:
+        super().__init__(config)
+        self._weather = weather_client
+
+    def is_safe(self) -> bool:
+        # Base checks (heartbeat + dawn) must pass first
+        if not super().is_safe():
+            return False
+        # Add weather check
+        conditions = self._weather.get_conditions()
+        if conditions["humidity_pct"] > 85:
+            return False
+        if conditions["cloud_cover"] == "overcast":
+            return False
+        return True
+
+
+# Usage — gate all pipeline calls on is_safe()
+safety_mgr = WeatherSafetyManager(config, weather_client)
+safety_mgr.attach_telescope(telescope)
+safety_mgr.start()
+
+def on_new_image(event: dict) -> None:
+    if not safety_mgr.is_safe():
+        print("System not safe — skipping image:", event["path"])
+        return
+    result = run_pipeline(event["path"], config)
+    # ...
+```

@@ -1,0 +1,128 @@
+{
+  "projectType": "saas",
+  "projectName": "Boundless Skies — Node v1",
+  "projectDescription": "An automated telescope control dashboard and science pipeline that connects a ZWO Seestar S50 to the Boundless Skies network, runs local differential photometry, and submits calibrated variable-star measurements to AAVSO.",
+  "theme": "aspen",
+  "primaryColor": "#7c7c7c",
+  "lightColor": "#080808",
+  "darkColor": "#cecece",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/overview",
+              "configuration/devices",
+              "configuration/photometry",
+              "configuration/safety"
+            ]
+          },
+          {
+            "group": "Dashboard",
+            "pages": [
+              "dashboard/overview",
+              "dashboard/telescope-controls",
+              "dashboard/scheduling",
+              "dashboard/imaging"
+            ]
+          },
+          {
+            "group": "Science Pipeline",
+            "pages": [
+              "pipeline/photometry",
+              "pipeline/aavso-submission",
+              "pipeline/fits-export"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/cloud-integration",
+              "guides/image-watcher",
+              "guides/live-stacking",
+              "guides/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Module Reference",
+        "groups": [
+          {
+            "group": "Core Modules",
+            "pages": [
+              "reference/photometry",
+              "reference/aavso-submission",
+              "reference/fits-export",
+              "reference/image-watcher",
+              "reference/safety-manager"
+            ]
+          },
+          {
+            "group": "Support Modules",
+            "pages": [
+              "reference/cloud-communicator",
+              "reference/live-stacker",
+              "reference/shared-models",
+              "reference/geolocation"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "ALPACA API client for telescope, camera, focuser, and filter wheel control",
+    "Web-based control dashboard (Flask, port 5173) with live SSE log stream",
+    "Automated FITS file detection via inotify/FSEvents ImageWatcher",
+    "8-step local differential photometry pipeline with AAVSO VSP and Gaia DR3 comparison star queries",
+    "AAVSO Extended File Format submission with full audit trail",
+    "Science-ready FITS export with enriched observatory and processing headers",
+    "SafetyManager watchdog with automatic dawn parking and reconnection",
+    "Cloud communicator for Boundless Skies network registration, heartbeats, plan polling, and measurement upload",
+    "Live stacking with translation-only star alignment for alt-az mounts",
+    "Night scheduler with Messier/NGC object catalog and schedule runner"
+  ],
+  "publicApiSurface": [
+    "photometry.run_pipeline(fits_path, config) -> dict | None",
+    "aavso_submission.submit(measurement, config) -> dict",
+    "fits_export.export_enhanced_fits(source_fits, result, config, export_dir=None) -> str | None",
+    "image_watcher.ImageWatcher(watch_path, callback, debounce_delay) — .start(), .stop()",
+    "alpaca.safety_manager.SafetyManager — .attach_telescope(), .start(), .stop(), .is_safe(), .status()",
+    "cloud_communicator.CloudCommunicator(config, get_conditions, on_plan, on_interrupt) — .start(), .stop(), .submit_measurement()",
+    "stacking.LiveStacker — .add_frame(), .stacked_image(), .preview_png_b64(), .reset()",
+    "shared_models.NodeInfo, TargetInfo, PlanItem, ObservationPlan, Measurement — .to_dict(), .from_dict()",
+    "geolocation.detect_location() -> dict | None",
+    "geolocation.enrich_config_with_location(config) -> dict",
+    "GET /api/status",
+    "GET /api/logs (SSE)",
+    "POST /api/discover",
+    "POST /api/connect",
+    "POST /api/disconnect",
+    "POST /api/telescope/slew",
+    "POST /api/telescope/park",
+    "POST /api/telescope/unpark",
+    "POST /api/telescope/tracking",
+    "POST /api/camera/expose",
+    "GET  /api/fits/list",
+    "POST /api/schedule/run",
+    "POST /api/photometry",
+    "POST /api/aavso",
+    "GET  /api/history",
+    "GET  /api/safety/status",
+    "GET  /api/catalog",
+    "GET  /api/config",
+    "POST /api/config"
+  ]
+}

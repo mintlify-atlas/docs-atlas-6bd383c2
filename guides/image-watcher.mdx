@@ -1,0 +1,137 @@
+---
+title: "ImageWatcher: Automated FITS File Detection from Seestar SMB Share"
+sidebarTitle: "Image Watcher"
+description: "Configure the ImageWatcher to monitor the Seestar SMB share for new FITS files and automatically trigger the photometry pipeline with debounce protection."
+---
+
+The `ImageWatcher` monitors a directory for new FITS files written by the Seestar S50 and triggers the photometry pipeline automatically when one arrives. Rather than polling the filesystem on a timer, it uses OS-native filesystem events — FSEvents on macOS, inotify on Linux, and kqueue on BSD — via the `watchdog` library, making detection near-instantaneous with no CPU overhead. Both freshly created files and atomically-renamed temporaries (the pattern the Seestar firmware uses) are detected correctly.
+
+## Configuration
+
+Set `image_watcher.enabled: true` in `config.yaml` and point `watch_path` at the mounted Seestar SMB share.
+
+```yaml config.yaml
+image_watcher:
+  enabled: false             # set true to start watching on launch
+  watch_path: /mnt/seestar   # path to the mounted Seestar SMB share
+  debounce_delay: 2.0        # seconds to wait after a file event before firing
+```
+
+<ParamField path="image_watcher.enabled" type="boolean" default="false">
+  Start the ImageWatcher daemon thread when `dashboard.py` launches. Set to `true` once the SMB share is mounted and reachable.
+</ParamField>
+
+<ParamField path="image_watcher.watch_path" type="string" default="/mnt/seestar">
+  Absolute path to the directory being watched. The watcher monitors this directory non-recursively — subdirectories are ignored. The path must exist at startup; if it does not, the watcher logs an error and does not start.
+</ParamField>
+
+<ParamField path="image_watcher.debounce_delay" type="number" default="2.0">
+  Number of seconds to wait after a filesystem event before reading the file and firing the callback. This protects against triggering on a partially-written file or on the intermediate events generated during an atomic rename. Increase this value on slow or high-latency SMB mounts.
+</ParamField>
+
+## Mounting the Seestar SMB Share
+
+The Seestar S50 exposes its internal storage as a guest SMB share named `Seestar`. Mount it so that `watch_path` resolves to the directory where new FITS files appear.
+
+<Tabs>
+  <Tab title="macOS">
+    ```bash
+    # Create the mount point once
+    sudo mkdir -p /mnt/seestar
+
+    # Mount the share (replace <seestar-ip> with your device's IP address)
+    mount_smbfs //guest@<seestar-ip>/Seestar /mnt/seestar
+    ```
+
+    If prompted for a password, leave it blank and press Enter. To mount automatically at login, add the entry to `/etc/fstab` or use a Login Item that runs the `mount_smbfs` command.
+  </Tab>
+  <Tab title="Linux">
+    ```bash
+    # Install cifs-utils if not already present
+    sudo apt-get install cifs-utils   # Debian/Ubuntu
+
+    # Create the mount point once
+    sudo mkdir -p /mnt/seestar
+
+    # Mount the share (replace <seestar-ip> with your device's IP address)
+    sudo mount -t cifs //<seestar-ip>/Seestar /mnt/seestar -o guest
+    ```
+
+    To mount automatically at boot, add the following line to `/etc/fstab`:
+
+    ```
+    //<seestar-ip>/Seestar  /mnt/seestar  cifs  guest,uid=1000,gid=1000  0  0
+    ```
+  </Tab>
+</Tabs>
+
+Verify the mount is working before enabling the watcher:
+
+```bash
+ls /mnt/seestar
+```
+
+You should see the FITS files the Seestar has captured. If the directory is empty, the Seestar may not have taken any images yet — this is expected.
+
+## Callback Event
+
+When a new FITS file is detected and stable, the watcher calls the registered callback with a single dict argument:
+
+```python
+{
+    "path":    "/mnt/seestar/seestar_image.fits",
+    "header":  {"OBJECT": "M31", "EXPTIME": 30.0, "NAXIS1": 1920, ...},  # or {}
+    "size_kb": 12345.6,
+}
+```
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `path` | `str` | Absolute path to the new FITS file. |
+| `header` | `dict` | FITS primary header as a flat dict (key → value). COMMENT, HISTORY, and blank keywords are stripped. If the header cannot be read, an empty dict is returned and the error is logged at WARNING level. |
+| `size_kb` | `float` | File size in kilobytes at the time the callback fires. |
+
+Only files with a `.fits` or `.fit` extension (case-insensitive) trigger the callback. All other files — JPEG previews, metadata files, thumbnails — are silently ignored.
+
+## Debounce
+
+The `debounce_delay` setting (default `2.0` seconds) controls how long the watcher waits after detecting a filesystem event before it reads the file and fires the callback. The timer is reset each time a new event arrives for the same path, so a file that takes several seconds to write will not trigger until it has been completely quiet for `debounce_delay` seconds.
+
+This protects against two failure modes:
+
+- **Partial writes:** Reading a FITS file mid-write produces a truncated or corrupted header. The delay ensures the Seestar firmware has finished writing before the callback runs.
+- **Atomic renames:** The Seestar writes FITS files by first writing to a temporary path and then renaming. Watchdog emits both a `created` event (for the temp file) and a `moved` event (for the final path). The watcher listens for both and debounces each path independently, so only the final stable path fires the callback.
+
+On a fast local filesystem 2.0 seconds is conservative. On a slower SMB mount over WiFi, you may want to increase it to `3.0` or `4.0`.
+
+## Programmatic Use
+
+You can instantiate `ImageWatcher` directly in your own scripts without running the full `dashboard.py` stack:
+
+```python image_watcher.py
+from image_watcher import ImageWatcher
+
+def on_new_fits(event):
+    print(f"New file: {event['path']} ({event['size_kb']:.1f} KB)")
+    print(f"Target: {event['header'].get('OBJECT', 'unknown')}")
+    print(f"Exposure: {event['header'].get('EXPTIME', '?')} s")
+
+watcher = ImageWatcher(
+    watch_path="/mnt/seestar",
+    callback=on_new_fits,
+    debounce_delay=2.0,
+)
+watcher.start()
+
+# The watcher runs in a daemon thread; keep the main thread alive
+import time
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    pass
+
+watcher.stop()
+```
+
+Calling `stop()` cancels any pending debounce timers and joins the watchdog observer thread cleanly. It is safe to call `stop()` even if `start()` was never called or failed (e.g., because the watch path did not exist).

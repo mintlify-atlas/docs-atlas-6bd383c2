@@ -1,0 +1,99 @@
+---
+title: "Node v1 Dashboard: Browser-Based Telescope Control Panel"
+sidebarTitle: "Overview"
+description: "The Node v1 dashboard is a Flask web app on port 5173 that provides telescope controls, scheduling, imaging, photometry status, and a live log stream."
+---
+
+The Node v1 dashboard is a browser-based single-page application served by a Flask backend. Once running, it is accessible at **http://localhost:5173** from any device on the same local network. The dashboard consolidates every operational concern for a Boundless Skies node into one interface: connecting to and controlling your mount, building and executing nightly observation schedules, taking exposures and browsing FITS files, monitoring safety conditions, editing the node configuration, and watching a live log stream—all without touching the command line after initial startup.
+
+## Starting the Dashboard
+
+The recommended way to start the dashboard is through the main process runner, which automatically restarts the Flask server if it crashes. For quick single-run sessions you can launch the dashboard module directly.
+
+<Steps>
+  <Step title="Recommended: start via main.py">
+    ```bash
+    python main.py
+    ```
+    `main.py` supervises the dashboard process and restarts it automatically on failure.
+  </Step>
+  <Step title="Single-run: start dashboard.py directly">
+    ```bash
+    python dashboard.py
+    ```
+    The server exits when the process is killed and does not restart on its own.
+  </Step>
+  <Step title="Open the dashboard in your browser">
+    Navigate to [http://localhost:5173](http://localhost:5173). The interface loads as a single-page app; no page reloads are required during normal operation.
+  </Step>
+</Steps>
+
+<Tip>
+  If you are connecting from another machine on your LAN, replace `localhost` with the node's IP address, e.g. `http://172.22.6.32:5173`.
+</Tip>
+
+## Panel Overview
+
+The dashboard is organized into several functional panels. Use the cards below to jump to detailed documentation for each major section.
+
+<CardGroup cols={2}>
+  <Card title="Telescope Controls" icon="telescope" href="/dashboard/telescope-controls">
+    Discover and connect ALPACA devices, park/unpark, toggle sidereal tracking, slew to RA/Dec coordinates, nudge the mount with the on-screen joystick, run autofocus, and trigger horizon scans.
+  </Card>
+  <Card title="Scheduling" icon="calendar" href="/dashboard/scheduling">
+    Browse the built-in Messier/NGC catalog, build a multi-target observation queue with per-target exposure settings, and run fully automated nightly sequences.
+  </Card>
+  <Card title="Imaging" icon="camera" href="/dashboard/imaging">
+    Take manual exposures, browse and preview FITS files, watch the pier camera live feed, and accumulate signal with the live stacking module.
+  </Card>
+  <Card title="Safety & Config" icon="shield-check" href="#">
+    The Safety Manager status panel shows sky-area and horizon-obstruction state in real time. The in-browser config editor lets you update `config.yaml` without leaving the dashboard.
+  </Card>
+</CardGroup>
+
+### Safety Panel
+
+The Safety Manager status panel appears in the dashboard sidebar. It polls `GET /api/safety/status` and displays the current safe/unsafe state, the reason for any unsafe condition, and whether the emergency park has been triggered. An **Emergency Park** button is always visible; clicking it sends `POST /api/telescope/park` immediately regardless of the current schedule or exposure state.
+
+<Warning>
+  The Emergency Park button interrupts any running exposure or schedule item without saving partial data. Use it only when you need to protect the equipment.
+</Warning>
+
+## Live Log Stream
+
+The dashboard subscribes to a Server-Sent Events (SSE) stream at `GET /api/logs`. Log lines are appended in real time to the log panel at the bottom of the page as they are emitted by the Python backend. The stream carries all standard Python logging levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`, and `CRITICAL`.
+
+<Note>
+  The log panel buffers the most recent lines in the browser. Older lines scroll off as new ones arrive. For persistent log storage, check the `logs/` directory on the node filesystem.
+</Note>
+
+### Night Vision Mode
+
+A **Night Vision** toggle in the top navigation bar switches the entire dashboard to a red-tinted CSS theme. This preserves your dark-adapted vision during outdoor observing sessions. All functional elements remain fully operable in night-vision mode; only the color palette changes.
+
+<Tip>
+  Assign a keyboard shortcut in your browser or OS to switch browser tabs quickly so you can flip in and out of night-vision mode without hunting for the toggle.
+</Tip>
+
+## Photometry & AAVSO Status Panels
+
+Two read-only status panels in the dashboard show the state of the photometry pipeline and the AAVSO submission queue. The **Photometry** panel displays the pipeline's current state (idle, running, or error) and the last measured magnitude and comparison-star result. The **AAVSO** panel shows whether the most recent `POST /api/aavso` submission succeeded and echoes back the target name, magnitude, and timestamp that were sent.
+
+These panels are informational only. To trigger a photometry run, open a FITS file in the FITS browser and click **Run Photometry**; to submit a measurement to AAVSO, use the submit button that appears after a successful photometry result.
+
+## In-Browser Config Editor
+
+The dashboard includes a live YAML editor that reads and writes the node's `config.yaml` file.
+
+| Action | Endpoint | Description |
+|--------|----------|-------------|
+| Load config | `GET /api/config` | Returns the current configuration as a JSON object |
+| Save config | `POST /api/config` | Accepts a JSON body, serializes it back to YAML, and writes `config.yaml` |
+
+<Warning>
+  Most configuration changes—especially camera, telescope, and stacking parameters—take effect only after **restarting the dashboard**. After clicking **Save**, stop and restart the process (`Ctrl-C` then `python main.py`) to apply the new values.
+</Warning>
+
+<Note>
+  A few runtime-safe keys (such as `pier_cam.target_fps` and `pier_cam.jpeg_quality`) are re-read on the next frame and do not require a restart, but the dashboard UI does not indicate which keys are hot-reloadable. When in doubt, restart.
+</Note>

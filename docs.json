@@ -1,72 +1,102 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Boundless Skies — Node v1",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#7c7c7c",
+    "light": "#cecece",
+    "dark": "#080808"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
+  "favicon": "https://icons.duckduckgo.com/ip3/ascom-standards.org.ico",
   "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "light": "https://media.brand.dev/51fc4cd4-a7d8-4455-8aa4-b9449cbb9f6e.jpg",
+    "dark": "https://media.brand.dev/51fc4cd4-a7d8-4455-8aa4-b9449cbb9f6e.jpg"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/skyrobot804/node_v1"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/skyrobot804/node_v1"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/overview",
+              "configuration/devices",
+              "configuration/photometry",
+              "configuration/safety"
+            ]
+          },
+          {
+            "group": "Dashboard",
+            "pages": [
+              "dashboard/overview",
+              "dashboard/telescope-controls",
+              "dashboard/scheduling",
+              "dashboard/imaging"
+            ]
+          },
+          {
+            "group": "Science Pipeline",
+            "pages": [
+              "pipeline/photometry",
+              "pipeline/aavso-submission",
+              "pipeline/fits-export"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/cloud-integration",
+              "guides/image-watcher",
+              "guides/live-stacking",
+              "guides/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Module Reference",
+        "groups": [
+          {
+            "group": "Core Modules",
+            "pages": [
+              "reference/photometry",
+              "reference/aavso-submission",
+              "reference/fits-export",
+              "reference/image-watcher",
+              "reference/safety-manager"
+            ]
+          },
+          {
+            "group": "Support Modules",
+            "pages": [
+              "reference/cloud-communicator",
+              "reference/live-stacker",
+              "reference/shared-models",
+              "reference/geolocation"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

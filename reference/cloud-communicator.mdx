@@ -1,0 +1,173 @@
+---
+title: "CloudCommunicator Module: Node Registration and Measurement Upload"
+sidebarTitle: "CloudCommunicator"
+description: "API reference for CloudCommunicator: constructor, start/stop, submit_measurement(), heartbeat loop, plan polling, interrupt handling, and disk-backed retry queue."
+---
+
+`CloudCommunicator` manages all communication between a Node v1 instance and the Boundless Skies cloud: registration, heartbeats, nightly plan polling, interrupt handling, and measurement upload with offline-queuing. When `cloud.enabled` is `false` (the default), nothing starts and the node behaves exactly as if the class were never instantiated.
+
+## Constructor
+
+`CloudCommunicator` is constructed once at startup and wired to the rest of the node via three optional callbacks. All cloud config is read from `config['cloud']`.
+
+```python
+from cloud_communicator import CloudCommunicator
+
+cc = CloudCommunicator(
+    config: dict,
+    get_conditions: Optional[Callable[[], dict]] = None,
+    on_plan: Optional[Callable[[list], None]] = None,
+    on_interrupt: Optional[Callable[[dict], None]] = None,
+)
+```
+
+<ParamField path="config" type="dict" required>
+  The full application config dict. `CloudCommunicator` reads the nested `config['cloud']` block for all its settings. The top-level `config['observatory']` and `config['photometry']` blocks are also read during auto-registration to populate node metadata.
+</ParamField>
+
+<ParamField path="get_conditions" type="Optional[Callable[[], dict]]" default="None">
+  A zero-argument callable that returns a dict of local observing conditions (e.g. sky temperature, cloud cover, wind speed). Called on every heartbeat tick; the result is merged into the heartbeat payload. If the callback raises, the exception is silently logged and an empty dict is used instead.
+</ParamField>
+
+<ParamField path="on_plan" type="Optional[Callable[[list], None]]" default="None">
+  Callback invoked with a list of plan items whenever the cloud returns a `plan_id` that differs from the last-seen one. Each item in the list is a node-schedule-runner–format dict. If `cloud.auto_run_plans` is `true`, the caller should wire this to the schedule runner's load function.
+</ParamField>
+
+<ParamField path="on_interrupt" type="Optional[Callable[[dict], None]]" default="None">
+  Callback invoked once for each unacknowledged interrupt returned by `GET /api/v1/interrupts`. After the callback returns, the interrupt is automatically acknowledged via `POST /api/v1/interrupts/{id}/ack`. The dict passed to the callback contains at minimum `id`, `name`, and `reason` keys.
+</ParamField>
+
+## Lifecycle
+
+Call `start()` after constructing the object to begin background communication. Call `stop()` to shut down gracefully.
+
+```python
+cc.start()   # launch daemon threads
+# ... node runs ...
+cc.stop()    # signal threads to exit
+```
+
+**`start()`** launches two daemon threads:
+
+- **`cloud-heartbeat`** — POSTs to `/api/v1/nodes/heartbeat` on the `heartbeat_interval` cadence, flushes the retry queue on every successful beat, and calls `_ensure_registered()` first if credentials are absent.
+- **`cloud-plan`** — polls `GET /api/v1/plan` and `GET /api/v1/interrupts` on the `plan_poll_interval` cadence.
+
+If `cloud.url` is empty, `start()` logs an error and returns immediately without spawning any threads.
+
+**`stop()`** sets an internal `threading.Event` that both daemon threads check on their next wait cycle. Threads exit cleanly within one full sleep interval at most.
+
+## submit_measurement()
+
+Upload a single photometry result to the cloud. This is the primary call made by the photometry pipeline after each successful measurement.
+
+```python
+cc.submit_measurement(
+    measurement: dict,
+    conditions: Optional[dict] = None,
+    fits_path: Optional[str] = None,
+) -> bool
+```
+
+<ParamField path="measurement" type="dict" required>
+  A photometry result dict, typically the direct output of `photometry.run_pipeline()` or a `Measurement.to_dict()` call. POSTed to `POST /api/v1/measurements` as `{"measurement": ..., "conditions": ...}`.
+</ParamField>
+
+<ParamField path="conditions" type="Optional[dict]" default="None">
+  Optional ambient condition data to include alongside the measurement in the upload payload. If `None`, an empty dict is sent.
+</ParamField>
+
+<ParamField path="fits_path" type="Optional[str]" default="None">
+  Path to a raw FITS file. When provided and `cloud.upload_images` is `true`, the file is uploaded via `POST /api/v1/images` as a multipart form upload immediately after the measurement JSON is accepted. FITS upload failures are logged but do not affect the measurement upload result.
+</ParamField>
+
+Returns `True` if the measurement was delivered to the cloud immediately, `False` if it was placed in the disk-backed retry queue (either because delivery failed or because registration is not yet complete).
+
+## Status Dict
+
+`cc.status` is a plain dict updated in-place as the communicator runs. It is safe to read from any thread without a lock.
+
+```python
+cc.status  # -> dict
+```
+
+<ResponseField name="registered" type="bool">
+  `True` if the node currently holds a valid `node_id` and `api_key` — either from an explicit config or from a completed auto-registration.
+</ResponseField>
+
+<ResponseField name="last_heartbeat_ok" type="bool | None">
+  `True` if the most recent heartbeat POST succeeded, `False` if it failed, `None` if no heartbeat has been attempted yet in this session.
+</ResponseField>
+
+<ResponseField name="last_plan_id" type="str | None">
+  The `plan_id` string of the most recently detected plan from the cloud, or `None` if no plan has been seen yet.
+</ResponseField>
+
+<ResponseField name="plan_items" type="int">
+  The number of items in the most recently received plan. `0` before a plan is detected.
+</ResponseField>
+
+<ResponseField name="queued_uploads" type="int">
+  The current length of the disk-backed retry queue. Updated after every enqueue and every flush.
+</ResponseField>
+
+<ResponseField name="error" type="str | None">
+  Human-readable description of the most recent error (heartbeat failure, registration failure, etc.), or `None` when the last operation succeeded.
+</ResponseField>
+
+## Auto-Registration
+
+Before every heartbeat, `_ensure_registered()` checks whether `node_id` and `api_key` are populated. If either is blank, it POSTs a registration payload to `POST /api/v1/nodes/register` (without auth headers) containing node metadata drawn from the `observatory` and `photometry` config blocks:
+
+| Field | Source |
+|---|---|
+| `node_id` | `config['photometry']['node_id']` |
+| `owner_name` | `config['observatory']['observer']` |
+| `latitude` / `longitude` | `config['observatory']['latitude/longitude']` |
+| `elevation` | `config['observatory']['elevation']` |
+| `telescope_model` | `config['observatory']['telescope']` (default: `ZWO Seestar S50`) |
+| `filters` | `config['photometry']['filter_name']` |
+| `utc_offset_hours` | Computed from `time.timezone` + DST offset |
+
+On a successful response, the returned `node_id` and `api_key` are persisted to `data/cloud_state.json`. On subsequent starts, `_load_state()` reads these credentials back so re-registration never repeats. Explicit non-empty values in the config always take precedence over saved state.
+
+## Disk-Backed Retry Queue
+
+Failed measurement uploads are appended to `data/cloud_upload_queue.json` as a JSON array of payload dicts. The queue is capped at **500 entries**; when it exceeds this limit the oldest entries are discarded first (the tail of the array is kept). On every successful heartbeat, `_flush_queue()` iterates through the queue and retries each upload in order — entries that succeed are removed, entries that fail remain for the next flush cycle.
+
+The queue file is created automatically under the `data/` directory if it does not exist. Reads and writes are protected by a `threading.Lock` so concurrent calls from the heartbeat thread and the photometry pipeline do not corrupt the file.
+
+## Config Keys
+
+All keys live under the top-level `cloud:` block in `config.yaml`.
+
+<ParamField path="cloud.enabled" type="bool" default="false">
+  Master switch. When `false`, `start()` returns immediately and no threads are launched. The node runs in fully offline mode.
+</ParamField>
+
+<ParamField path="cloud.url" type="str" default='""'>
+  Base URL of the Boundless Skies cloud API, e.g. `https://cloud.example.org`. Trailing slashes are stripped. Must be non-empty for the communicator to start.
+</ParamField>
+
+<ParamField path="cloud.node_id" type="str" default='""'>
+  Pre-assigned node identifier. Leave blank to use auto-registration; credentials will be written to `data/cloud_state.json` on first successful registration.
+</ParamField>
+
+<ParamField path="cloud.api_key" type="str" default='""'>
+  API key paired with `node_id`. Leave blank alongside `node_id` for auto-registration.
+</ParamField>
+
+<ParamField path="cloud.heartbeat_interval" type="int" default="60">
+  Seconds between heartbeat POSTs. Lower values increase responsiveness at the cost of more network traffic.
+</ParamField>
+
+<ParamField path="cloud.plan_poll_interval" type="int" default="300">
+  Seconds between plan and interrupt polls. The cloud plan is typically regenerated once per night, so the default 5-minute cadence is sufficient.
+</ParamField>
+
+<ParamField path="cloud.auto_run_plans" type="bool" default="false">
+  When `true`, newly received plans are automatically handed to the schedule runner via the `on_plan` callback without any user confirmation in the dashboard.
+</ParamField>
+
+<ParamField path="cloud.upload_images" type="bool" default="false">
+  When `true`, raw FITS files are uploaded to `POST /api/v1/images` alongside each measurement (if `fits_path` is supplied to `submit_measurement()`). Requires sufficient upstream bandwidth; files can be several megabytes each.
+</ParamField>
